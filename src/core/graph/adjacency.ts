@@ -157,8 +157,9 @@ export class AdjacencyGraph {
         ];
 
         for (const edge of neighbors) {
-          const actualTargetId = edge.targetId === currId ? edge.sourceId : edge.targetId;
-          if (actualTargetId === currId) continue;
+          // Both lists store the neighbour in targetId (incoming entries point back at the source).
+          const actualTargetId = edge.targetId;
+          if (actualTargetId === currId) continue; // self-loop
 
           // Prevent immediate back-pulse reflection
           if (predecessors.get(currId)?.has(actualTargetId)) continue;

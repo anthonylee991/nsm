@@ -37,7 +37,7 @@ export function canSee(asker: VisibleSet | undefined, gate: Gated | undefined, s
   const askerScopes = asker.scopes instanceof Set ? asker.scopes : new Set(asker.scopes);
   if (scope && !askerScopes.has(scope)) return false;
   if (!gate || gate.visibility === 'all') return true;
-  if (gate.visibility === 'admin') return asker.isAdmin === true;
+  if (gate.visibility === 'admin') return false; // non-admins were not returned above
   if (gate.visibility === 'scoped') {
     return (gate.scopeIds ?? []).some((s) => askerScopes.has(s));
   }

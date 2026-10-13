@@ -1,9 +1,8 @@
 # Neuro-Swarm Mesh (NSM)
 ### A 100% Non-LLM, Biologically-Inspired Agent Memory Architecture
 
-**Technical Specification & Architecture Whitepaper**  
-*Version 1.0 — October 2026*  
-*SkillVault Research & Engineering*
+**Design specification**  
+*Version 1.0, October 2026. Anthony Lee.*
 
 ---
 
@@ -16,13 +15,13 @@ Conventional retrieval architectures for AI agents rely almost exclusively on hi
 3. **Cloud Dependency & Cost**: Continual embedding generation and vector database SaaS calls introduce non-trivial operating expenses and privacy leakages.
 4. **Passive Zombie Rows**: Traditional vector indices store static chunks that never strengthen with successful reuse or fade when obsolete.
 
-The **Neuro-Swarm Mesh (NSM)** provides a radical alternative: **a 100% non-LLM, zero-embedding memory architecture** executing in **sub-2ms** local latency. NSM combines:
-* **Durable Storage**: SQLite FTS5 with BM25 ranking, trigram tokenization, and Reciprocal Rank Fusion (RRF).
-* **RAM Graph Pointer Mesh**: Bidirectional in-memory graph hydrated on boot for $0.01\text{ms}$ synaptic pointer traversals.
+The **Neuro-Swarm Mesh (NSM)** is the opposite bet: **a non-LLM, zero-embedding memory architecture** that runs entirely in process (queries take about 1.5 ms at 200 nodes and 10 to 25 ms at about 1,700 nodes; §4). NSM combines:
+* **Durable Storage**: SQLite FTS5 with BM25 ranking, prefix tokenization, and Reciprocal Rank Fusion (RRF).
+* **RAM Graph Pointer Mesh**: Bidirectional in-memory adjacency lists hydrated on boot, so the graph walk never touches disk.
 * **Neurobiological Spreading Activation**: Energy radiation based on the Collins & Loftus semantic network model, weighted by epistemic source authority.
 * **Stigmergic Swarm Pheromones**: Ant Colony Optimization (ACO) reinforcing successful associative paths ($+\Delta \tau$) and exponentially evaporating unused synapses ($\tau(t) = \tau_0 e^{-\lambda \Delta t}$).
 * **Lateral Inhibition**: Sensory focus mechanisms that eliminate intra-category redundancy and resolve conflicting knowledge claims via directed supersession (`:SUPERSEDES`).
-* **Zero-LLM OpenIE Extraction**: ClausIE v2 rule-based grammatical clause deconstruction, SVO/SVC triple decomposition, and quantifier preservation in under $15\mu\text{s}$ per sentence.
+* **Zero-LLM OpenIE Extraction**: ClausIE v2 rule-based grammatical clause deconstruction, SVO/SVC triple decomposition, and quantifier preservation, about 10 µs per sentence (`tests/benchmark.test.ts`).
 
 ---
 
@@ -177,22 +176,47 @@ Weather: 72°F Sunny
 
 ---
 
-## 4. Empirical Performance Benchmarks
+## 4. What has been measured
 
-Measured on a standard developer workstation running Bun v1.4 on Windows:
+Every figure below comes from code in this repo or from MemVault's benchmark harness
+(`skillvault/apps/server/bench`), run on a developer workstation (Bun 1.4, Windows). Nothing is typed in.
 
-| Benchmark Metric | Measured Result |
+**Unit microbenchmark** (`tests/benchmark.test.ts`, 200 nodes, 300 edges, 50 iterations):
+
+| Metric | Measured |
 | :--- | :--- |
-| **Node Count** | 200 persistent nodes |
-| **Synaptic RAM Edges** | 300 pointer edges |
-| **Average Query Latency** | **1.53 ms** |
-| **Minimum Query Latency** | **1.10 ms** |
-| **OpenIE Extraction Throughput** | **10.4 microseconds** per sentence |
-| **Test Suite Execution** | **15 tests passing in < 180 ms** |
-| **External LLM Cost** | **$0.00000** |
+| Mean query latency | 1.5 ms |
+| Min / max query latency | 1.2 ms / 4.9 ms |
+| Clause extraction | 9 µs per sentence |
+| Test suite | 15 tests, under 200 ms |
+
+**One LoCoMo conversation through the harness** (system `nsm`, conv-30, no model calls): 369 turns
+ingested in 1.2 s into 1,735 nodes (1,366 of them concept nodes) and 1,786 edges; 10 to 25 ms per
+query at that size. Latency grows with the store because `query` scans every node for scope detection
+and substring matching, and `ingestText` scans every node for conflict resolution on each insert.
+
+**Accuracy has not been measured.** NSM is registered in the harness (`bench/systems/nsm.ts`) so
+it can be scored on the same 885 held-out LoCoMo questions, answer model and judges as every system in
+`bench/RESULTS.md`. Until that run is recorded there, this document makes no accuracy claim and no
+comparison with any other system.
+
+### 4.1 Known limits of the current implementation
+
+* Directed supersession (§3.4) is implemented only for residence / location claims whose
+  lower-authority source name contains `social`, `scraper` or `feed`. Other attribute conflicts are
+  not detected.
+* Edge weights are capped at 1.0 by `reinforceEdge`; reinforcement can only restore evaporated weight,
+  not grow a trail beyond its initial strength.
+* Lateral inhibition caps each node type at 3 by default, so a store where every memory is a `fact`
+  returns at most 3 memories unless `lateralInhibitionMaxPerCategory` is raised.
+* The `ingestText` default authority is 1.0 for every memory, so the authority weighting in §3.1 and
+  §3.3 has no effect on text ingested that way.
 
 ---
 
-## 5. Summary & Adoption
+## 5. Summary
 
-Neuro-Swarm Mesh demonstrates that autonomous agent memory does not require slow, non-deterministic, and costly vector databases or LLM extractors. By marrying SQLite FTS5 BM25 with in-memory spreading activation and biological stigmergy, NSM achieves deterministic, sub-2ms, local-first associative memory for modern agent systems.
+NSM tests whether an agent memory with no model calls at all is good enough to be useful. The
+mechanism (BM25 and substring fusion, a concept graph walked by spreading activation, inhibition,
+reinforcement and evaporation) is implemented and unit-tested; its speed on small stores is measured;
+its accuracy against a real benchmark is the open question, and the harness to answer it is wired up.

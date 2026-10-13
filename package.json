@@ -1,47 +1,30 @@
 {
   "name": "@skillvault/nsm",
   "version": "1.0.0",
-  "description": "Neuro-Swarm Mesh (NSM): A 100% non-LLM, biologically-inspired memory architecture pairing SQLite FTS5 BM25 storage with in-memory graph spreading activation, ant colony pheromone evaporation, and OpenIE extraction.",
+  "description": "Neuro-Swarm Mesh (NSM): a zero-LLM, zero-embedding agent memory: SQLite FTS5 BM25 storage, in-memory graph spreading activation, pheromone evaporation and rule-based OpenIE extraction.",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
     "test": "bun test",
     "test:watch": "bun test --watch",
-    "benchmark": "bun run src/evals/nsm-comparative-benchmark.ts",
-    "benchmark:sim": "bun run src/evals/nsm-comparative-benchmark.ts",
-    "benchmark:live": "bun run src/evals/live-competitors.ts",
-    "benchmark:niah": "bun run src/evals/needle-haystack-benchmark.ts",
-    "benchmark:swarm": "bun run src/evals/swarm-acceleration-benchmark.ts",
-    "benchmark:focus": "bun run src/evals/focus-hysteresis-benchmark.ts",
-    "benchmark:security": "bun run src/evals/authority-security-benchmark.ts",
-    "benchmark:standard": "bun run src/evals/standard-benchmarks.ts",
-    "benchmark:locomo": "bun run src/evals/locomo-canonical.ts",
-    "benchmark:all": "bun run src/evals/run-all-benchmarks.ts"
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "memory",
     "zero-llm",
-    "neuro-swarm",
     "spreading-activation",
     "stigmergy",
-    "ant-colony-optimization",
     "sqlite-fts5",
     "bm25",
     "openie",
-    "clausie",
-    "cognitive-mesh",
     "local-first"
   ],
-  "author": "SkillVault Research & Engineering",
+  "author": "Anthony Lee",
   "license": "MIT",
-  "dependencies": {
-    "zod": "^4.6.5"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@getzep/zep-cloud": "^3.30.0",
     "@types/bun": "latest",
-    "mem0ai": "^3.3.1",
     "typescript": "^5.7.3"
   }
 }
