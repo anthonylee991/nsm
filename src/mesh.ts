@@ -11,7 +11,9 @@ import type {
   RetrievalTelemetry,
   NodeType,
   EntityCategory,
+  FocusState,
 } from "./core/types.js";
+import { canSee } from "./core/types.js";
 
 export interface MeshConfig {
   dbPath?: string;
@@ -212,25 +214,103 @@ export class NeuroSwarmMesh {
     const hopDecay = options.hopDecay ?? 0.45;
     const minEnergyThreshold = options.minEnergyThreshold ?? 0.05;
     const lateralMax = options.lateralInhibitionMaxPerCategory ?? 3;
+    const asker = options.asker;
 
-    // 1. Lexical Scout Search
+    // Focus hysteresis state management
+    let updatedFocus: FocusState = options.focus ? { ...options.focus } : {};
+    const lowerQ = queryText.toLowerCase();
+
+    // Check for explicit scope/entity mentions
+    const allStoredNodes = this.storage.getAllNodes();
+    let detectedScope: string | null = null;
+    for (const n of allStoredNodes) {
+      const scope = n.scope || n.payload.scope;
+      if (scope && canSee(asker, n.gate, scope)) {
+        if (lowerQ.includes(scope.toLowerCase()) || lowerQ.includes(n.label.toLowerCase())) {
+          detectedScope = scope;
+          break;
+        }
+      }
+    }
+
+    if (detectedScope) {
+      // Direct focus lock
+      updatedFocus = {
+        [`entity:${detectedScope}`]: {
+          state: "locked",
+          last: 1.0,
+          scopeId: detectedScope,
+        },
+      };
+    } else {
+      // Check pronoun/follow-up continuation or access revocation
+      const focusKeys = Object.keys(updatedFocus);
+      if (focusKeys.length > 0) {
+        const primaryKey = focusKeys[0]!;
+        const currentScope = updatedFocus[primaryKey]?.scopeId;
+        if (currentScope && asker && !canSee(asker, undefined, currentScope)) {
+          // Access revoked mid-session: immediately purge focus
+          updatedFocus = {};
+        } else {
+          // Retain focus within attractor basin for ambiguous queries
+          const isAmbiguous = /their|its|they|who|what|where|how|and|is|about|from|when/i.test(queryText);
+          if (isAmbiguous) {
+            updatedFocus[primaryKey] = {
+              ...updatedFocus[primaryKey]!,
+              last: Math.max(0.40, (updatedFocus[primaryKey]!.last || 1.0) * 0.90),
+            };
+          } else {
+            delete updatedFocus[primaryKey];
+          }
+        }
+      }
+    }
+
+    // 1. Lexical Scout Search with Invariant I1: Visibility filter inside retrieval
     const tSearchStart = performance.now();
-    let seedHits = this.storage.searchHybridRRF(queryText, lexicalLimit);
+    let seedHits = this.storage.searchHybridRRF(queryText, lexicalLimit, 60, asker);
     const searchDurationMs = performance.now() - tSearchStart;
 
+    // Normalize RRF scores so top lexical matches scale to 1.0
+    if (seedHits.length > 0) {
+      const maxSeedScore = Math.max(...seedHits.map((s) => s.score), 0.0001);
+      seedHits = seedHits.map((s) => ({
+        ...s,
+        score: s.score / maxSeedScore,
+      }));
+    }
+
+    // If focus is locked and query is ambiguous, inject focused scope seeds as ambient background support
+    const activeFocusKeys = Object.keys(updatedFocus);
+    if (activeFocusKeys.length > 0) {
+      const focusedScope = updatedFocus[activeFocusKeys[0]!]?.scopeId;
+      if (focusedScope) {
+        const focusedNodes = allStoredNodes.filter(
+          (n) => (n.scope === focusedScope || n.payload.scope === focusedScope) && canSee(asker, n.gate, focusedScope)
+        );
+        for (const fNode of focusedNodes.slice(0, 3)) {
+          if (!seedHits.some((s) => s.node.id === fNode.id)) {
+            seedHits.push({
+              node: fNode,
+              score: 0.35 * (updatedFocus[activeFocusKeys[0]!]?.last || 1.0),
+              matchReasons: [`Focus Attractor Basin (${focusedScope})`],
+            });
+          }
+        }
+      }
+    }
+
     // 2. Invariant & Domain Guaranteed Hook
-    const allStoredNodes = this.storage.getAllNodes();
     const guaranteedNodes: MemoryNode[] = [];
 
     // Always guarantee pinned invariants matching query keywords or explicit filter
     if (options.guaranteedFilter) {
-      const filtered = allStoredNodes.filter((n) => options.guaranteedFilter!(n, queryText));
+      const filtered = allStoredNodes.filter((n) => canSee(asker, n.gate, n.scope || n.payload.scope) && options.guaranteedFilter!(n, queryText));
       guaranteedNodes.push(...filtered);
     } else {
-      // Default heuristic: if query touches invariant domain words (e.g. sleep, boundary, weekend), guarantee match
-      const lowerQ = queryText.toLowerCase();
       const invariantMatches = allStoredNodes.filter((n) => {
         if (n.nodeType !== "invariant") return false;
+        if (!canSee(asker, n.gate, n.scope || n.payload.scope)) return false;
         const text = (n.label + " " + JSON.stringify(n.payload)).toLowerCase();
         return text.split(/\s+/).some((w) => w.length > 3 && lowerQ.includes(w));
       });
@@ -253,13 +333,14 @@ export class NeuroSwarmMesh {
       seedHits,
       maxHops,
       hopDecay,
-      minEnergyThreshold
+      minEnergyThreshold,
+      asker
     );
     const activationDurationMs = performance.now() - tActivationStart;
 
     // 4. Lateral Inhibition
     const tInhibitionStart = performance.now();
-    const salientNodes = this.graph.lateralInhibition(activatedNodes, lateralMax);
+    const salientNodes = this.graph.lateralInhibition(activatedNodes, lateralMax, asker);
     const inhibitionDurationMs = performance.now() - tInhibitionStart;
 
     // 5. PAE Context Slotting
@@ -287,6 +368,7 @@ export class NeuroSwarmMesh {
       seedNodes: seedHits,
       paePrompt,
       telemetry,
+      focus: updatedFocus,
     };
   }
 

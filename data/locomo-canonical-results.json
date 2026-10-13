@@ -1,0 +1,156 @@
+{
+  "timestamp": "2026-10-03T19:46:30.673Z",
+  "judgeModel": "deepseek/deepseek-v4.1-flash",
+  "scoreBoard": {
+    "Neuro-Swarm Mesh (NSM)": {
+      "totalQuestions": 5,
+      "passedCount": 3,
+      "totalScore": 300,
+      "categoryScores": {
+        "1": {
+          "count": 2,
+          "totalScore": 200,
+          "passedCount": 2
+        },
+        "2": {
+          "count": 2,
+          "totalScore": 100,
+          "passedCount": 1
+        },
+        "3": {
+          "count": 1,
+          "totalScore": 0,
+          "passedCount": 0
+        }
+      },
+      "tokensSum": 1908,
+      "latencySumMs": 82.94699999999875,
+      "networkLatencySumMs": 0
+    },
+    "ACM (Arboreal Cognitive Mesh)": {
+      "totalQuestions": 5,
+      "passedCount": 3,
+      "totalScore": 350,
+      "categoryScores": {
+        "1": {
+          "count": 2,
+          "totalScore": 100,
+          "passedCount": 1
+        },
+        "2": {
+          "count": 2,
+          "totalScore": 200,
+          "passedCount": 2
+        },
+        "3": {
+          "count": 1,
+          "totalScore": 50,
+          "passedCount": 0
+        }
+      },
+      "tokensSum": 1944,
+      "latencySumMs": 5.390800000003765,
+      "networkLatencySumMs": 0
+    },
+    "PCM (Cognitive Mesh)": {
+      "totalQuestions": 5,
+      "passedCount": 3,
+      "totalScore": 350,
+      "categoryScores": {
+        "1": {
+          "count": 2,
+          "totalScore": 100,
+          "passedCount": 1
+        },
+        "2": {
+          "count": 2,
+          "totalScore": 200,
+          "passedCount": 2
+        },
+        "3": {
+          "count": 1,
+          "totalScore": 50,
+          "passedCount": 0
+        }
+      },
+      "tokensSum": 1513,
+      "latencySumMs": 3.0824999999974807,
+      "networkLatencySumMs": 0
+    },
+    "Standard Vector RAG": {
+      "totalQuestions": 5,
+      "passedCount": 3,
+      "totalScore": 350,
+      "categoryScores": {
+        "1": {
+          "count": 2,
+          "totalScore": 100,
+          "passedCount": 1
+        },
+        "2": {
+          "count": 2,
+          "totalScore": 200,
+          "passedCount": 2
+        },
+        "3": {
+          "count": 1,
+          "totalScore": 50,
+          "passedCount": 0
+        }
+      },
+      "tokensSum": 1513,
+      "latencySumMs": 0.04659999999807951,
+      "networkLatencySumMs": 0
+    }
+  },
+  "reportRows": [
+    {
+      "Memory Engine": "Neuro-Swarm Mesh (NSM)",
+      "Judge Accuracy (Pass Rate)": "60.0%",
+      "Mean Quality Score": "60.0%",
+      "Cat 1 (Single-Hop)": "100%",
+      "Cat 2 (Temporal)": "50%",
+      "Cat 3 (Multi-Hop)": "0%",
+      "Cat 4 (Preference)": "N/A",
+      "Avg Tokens": "382 tok",
+      "Compute Latency": "16.59ms",
+      "Network RTT": "N/A (local)"
+    },
+    {
+      "Memory Engine": "ACM (Arboreal Cognitive Mesh)",
+      "Judge Accuracy (Pass Rate)": "60.0%",
+      "Mean Quality Score": "70.0%",
+      "Cat 1 (Single-Hop)": "50%",
+      "Cat 2 (Temporal)": "100%",
+      "Cat 3 (Multi-Hop)": "0%",
+      "Cat 4 (Preference)": "N/A",
+      "Avg Tokens": "389 tok",
+      "Compute Latency": "1.08ms",
+      "Network RTT": "N/A (local)"
+    },
+    {
+      "Memory Engine": "PCM (Cognitive Mesh)",
+      "Judge Accuracy (Pass Rate)": "60.0%",
+      "Mean Quality Score": "70.0%",
+      "Cat 1 (Single-Hop)": "50%",
+      "Cat 2 (Temporal)": "100%",
+      "Cat 3 (Multi-Hop)": "0%",
+      "Cat 4 (Preference)": "N/A",
+      "Avg Tokens": "303 tok",
+      "Compute Latency": "0.62ms",
+      "Network RTT": "N/A (local)"
+    },
+    {
+      "Memory Engine": "Standard Vector RAG",
+      "Judge Accuracy (Pass Rate)": "60.0%",
+      "Mean Quality Score": "70.0%",
+      "Cat 1 (Single-Hop)": "50%",
+      "Cat 2 (Temporal)": "100%",
+      "Cat 3 (Multi-Hop)": "0%",
+      "Cat 4 (Preference)": "N/A",
+      "Avg Tokens": "303 tok",
+      "Compute Latency": "0.01ms",
+      "Network RTT": "N/A (local)"
+    }
+  ]
+}

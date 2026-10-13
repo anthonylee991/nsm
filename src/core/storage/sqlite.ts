@@ -4,7 +4,9 @@ import {
   type MemoryEdge,
   type ScoredMemoryNode,
   type ConsultationRecord,
+  type VisibleSet,
   DEFAULT_SOURCE_AUTHORITY,
+  canSee,
 } from "../types.js";
 
 const STOP_WORDS = new Set([
@@ -84,6 +86,8 @@ export class SQLiteStorage {
     const payloadToSave = { ...node.payload };
     if (node.authority !== undefined) payloadToSave._authority = node.authority;
     if (node.entityCategory !== undefined) payloadToSave._entityCategory = node.entityCategory;
+    if (node.scope !== undefined) payloadToSave._scope = node.scope;
+    if (node.gate !== undefined) payloadToSave._gate = node.gate;
     const payloadJson = JSON.stringify(payloadToSave);
     const searchContent = contentForFts ?? `${node.label} ${payloadJson}`;
 
@@ -152,6 +156,8 @@ export class SQLiteStorage {
       payload,
       authority: payload._authority ?? (DEFAULT_SOURCE_AUTHORITY[row.source] ?? 1.0),
       entityCategory: payload._entityCategory,
+      scope: payload._scope ?? payload.scope,
+      gate: payload._gate ?? payload.gate,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -169,6 +175,8 @@ export class SQLiteStorage {
         payload,
         authority: payload._authority ?? (DEFAULT_SOURCE_AUTHORITY[r.source] ?? 1.0),
         entityCategory: payload._entityCategory,
+        scope: payload._scope ?? payload.scope,
+        gate: payload._gate ?? payload.gate,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
       };
@@ -248,8 +256,9 @@ export class SQLiteStorage {
 
   /**
    * Reciprocal Rank Fusion (RRF) combining BM25 and substring/keyword matches
+   * Invariant I1: The visibility filter goes inside every retrieval, never after it.
    */
-  public searchHybridRRF(query: string, limit: number = 10, k: number = 60): ScoredMemoryNode[] {
+  public searchHybridRRF(query: string, limit: number = 10, k: number = 60, asker?: VisibleSet): ScoredMemoryNode[] {
     const tokens = extractSearchTokens(query);
     const bm25Results = this.searchBM25(query, limit * 2);
     const substringResults = this.searchSubstrings(tokens, limit * 2);
@@ -265,9 +274,10 @@ export class SQLiteStorage {
       rrfScores.set(res.id, existing);
     });
 
-    // 2. Score Substring rank
+    // 2. Score Substring rank with match count weighting
     substringResults.forEach((res, rank) => {
-      const rrf = 1 / (k + rank + 1);
+      const matchMultiplier = 1 + res.count * 0.75;
+      const rrf = (1 / (k + rank + 1)) * matchMultiplier;
       const existing = rrfScores.get(res.id) ?? { score: 0, reasons: [] };
       existing.score += rrf;
       existing.reasons.push(`Keyword match (${res.count} hits)`);
@@ -279,6 +289,11 @@ export class SQLiteStorage {
     for (const [id, meta] of rrfScores.entries()) {
       const node = this.getNodeById(id);
       if (node) {
+        // Enforce Invariant I1: In-retrieval access gate filtering
+        if (asker && !canSee(asker, node.gate, node.scope || node.payload.scope)) {
+          continue;
+        }
+
         const authority = node.authority ?? (DEFAULT_SOURCE_AUTHORITY[node.source] ?? 1.0);
         // Scale score by epistemic authority
         const finalScore = meta.score * (0.5 + 0.5 * authority);

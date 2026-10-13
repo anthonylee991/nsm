@@ -20,6 +20,38 @@ export type EntityCategory =
   | 'concept'
   | 'general';
 
+export interface Gated {
+  visibility: 'all' | 'admin' | 'scoped';
+  scopeIds?: string[];
+}
+
+export interface VisibleSet {
+  principalId: string;
+  isAdmin?: boolean;
+  scopes: Set<string> | string[];
+}
+
+export function canSee(asker: VisibleSet | undefined, gate: Gated | undefined, scope?: string): boolean {
+  if (!asker) return true;
+  if (asker.isAdmin) return true;
+  const askerScopes = asker.scopes instanceof Set ? asker.scopes : new Set(asker.scopes);
+  if (scope && !askerScopes.has(scope)) return false;
+  if (!gate || gate.visibility === 'all') return true;
+  if (gate.visibility === 'admin') return asker.isAdmin === true;
+  if (gate.visibility === 'scoped') {
+    return (gate.scopeIds ?? []).some((s) => askerScopes.has(s));
+  }
+  return true;
+}
+
+export interface FocusState {
+  [key: string]: {
+    state: 'locked' | 'decaying';
+    last: number;
+    scopeId?: string;
+  };
+}
+
 export interface MemoryNode {
   id: string;
   nodeType: NodeType;
@@ -28,6 +60,8 @@ export interface MemoryNode {
   payload: Record<string, any>;
   authority?: number; // Epistemic authority weight [0.0 - 1.0]
   entityCategory?: EntityCategory;
+  scope?: string;
+  gate?: Gated;
   createdAt: number;
   updatedAt: number;
 }
@@ -85,6 +119,10 @@ export interface MemoryQueryOptions {
   ambientContext?: Record<string, string>;
   /** Optional predicate hook to guarantee inclusion of domain-critical invariant nodes */
   guaranteedFilter?: (node: MemoryNode, query: string) => boolean;
+  /** Access permissions of the querying principal (Invariant I1: visibility filtered inside retrieval) */
+  asker?: VisibleSet;
+  /** Multi-turn conversational focus state (attractor basin to prevent prompt flickering) */
+  focus?: FocusState;
 }
 
 export interface RetrievalTelemetry {
@@ -106,6 +144,8 @@ export interface RetrievalResult {
   paePrompt: string;
   /** Performance telemetry */
   telemetry: RetrievalTelemetry;
+  /** Updated multi-turn focus state */
+  focus?: FocusState;
 }
 
 export interface ConsultationRecord {

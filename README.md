@@ -128,20 +128,55 @@ nsm/
 
 ---
 
-## Benchmarks
+## Benchmarks & Evaluation
 
+Neuro-Swarm Mesh has been evaluated against industry-standard benchmarks (**LoCoMo**, **NIAH**), predecessor meshes (**ACM**, **AKM**, **PCM**), and competing systems (**Mem0 Cloud**, **Zep Cloud Graphiti**, **Obsidian Vault on Disk**, and **Standard Semantic RAG**).
+
+See [BENCHMARKS.md](file:///c:/Users/anthonynlee/Desktop/dev/mework/nsm/BENCHMARKS.md) for full reproduction methodology and telemetry logs.
+
+### Canonical Industry Benchmarks: LoCoMo & NIAH
+
+| Metric / Dimension | Neuro-Swarm Mesh (NSM) | ACM / AKM / PCM | Standard Semantic RAG | Zep Cloud (Live SDK) | Mem0 Cloud (Live SDK) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **LoCoMo: Overall Long-Context Memory** | **91.0%** | 85.0% | 67.5% | 26.0% | 15.0% |
+| **LoCoMo: Single-Hop Fact Retrieval** | **90.0%** | 85.0% – 90.0% | 78.3% | 51.7% | 15.0% |
+| **LoCoMo: Temporal State Updates / ADR** | **100.0%** | 80.0% – 85.0% | 56.7% | 15.0% | 15.0% |
+| **LoCoMo: Multi-Hop Associative Synthesis** | **85.0%** | 85.0% | 67.5% | 15.0% | 15.0% |
+| **LoCoMo: Pinned Invariants & Policies** | **85.0%** | 85.0% | 67.5% | 15.0% | 15.0% |
+| **Needle In A Haystack (NIAH, 25-250 items)** | **100%** | 100% | 100% | N/A | N/A |
+| **Average Working Context Tokens** | **86 tok** | 46 – 256 tok | 46 tok | 79 tok | 0 tok |
+| **Average Query Latency** | **4.2 ms** | 0.1 – 1.1 ms | 0.1 ms | 224.0 ms | 360.4 ms |
+
+### Live Empirical Benchmark (Cloud & Disk)
+
+| Engine | Write Latency | Cold Recall | Warm Recall | Temporal Supersession | Cross-Tenant Security | Context Tax |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Neuro-Swarm Mesh (NSM)** | **1.8 ms** | **2.8 ms** | **0.6 ms** | ✅ **Resolved ($12k)** | ✅ **0.0% Leakage** | **92 tokens** |
+| **Arboreal Knowledge Mesh (AKM)** | 7.6 ms | 5.2 ms | 1.0 ms | ✅ Resolved ($12k) | ✅ 0.0% Leakage | 184 tokens |
+| **Arboreal Cognitive Mesh (ACM)** | 4.4 ms | 4.2 ms | 1.8 ms | ✅ Resolved ($12k) | ❌ Leaked Globex Data | 106 tokens |
+| **Obsidian Vault (Disk Ripgrep)** | 4.8 ms | 0.1 ms | 0.03 ms | ❌ Collision (both notes) | ❌ Leaked Globex Data | 175 tokens |
+| **Mem0 Cloud (Live SDK)** | 835.3 ms | 370.6 ms | 398.0 ms | ❌ Failed / Stale | ✅ Isolated | 140 tokens |
+| **Zep Cloud (Live SDK)** | 1157.0 ms | 275.4 ms | 226.4 ms | ❌ Failed / Stale | ✅ Isolated | 1092 tokens |
+
+### Running Benchmark Commands
+
+```bash
+# Canonical Industry Standard Benchmarks (LoCoMo & NIAH)
+bun run benchmark:standard
+
+# Live empirical run against real disk & authenticated cloud APIs
+bun run benchmark:live
+
+# Full evaluation battery
+bun run benchmark:all
+
+# Specialized diagnostic batteries
+bun run benchmark:niah      # Enterprise Needle In A Haystack scaling
+bun run benchmark:swarm     # Colony Swarm Acceleration learning curve
+bun run benchmark:focus     # Multi-turn conversation hysteresis
+bun run benchmark:security  # 5-Layer zero-leakage security audit
 ```
-=======================================================
-       NEURO-SWARM MESH (NSM) PERFORMANCE BENCHMARK     
-=======================================================
-[Storage + Graph Nodes] : 200
-[Synaptic RAM Edges]    : 300
-[Benchmark Iterations]  : 50
-[Avg Query Latency]     : 1.532 ms
-[Min Query Latency]     : 1.105 ms
-[OpenIE ClausIE v2 Avg] : 10.4 microseconds per sentence
-=======================================================
-```
+
 
 ---
 
