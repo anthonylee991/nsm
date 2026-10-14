@@ -115,6 +115,20 @@ export class NeuroSwarmMesh {
     this.autoResolveConflicts(node);
   }
 
+  /**
+   * Merge fields into a node's payload in storage and in the in-memory graph (which holds its own node
+   * objects), without re-indexing. For lifecycle fields that change on every recall.
+   */
+  public updatePayload(nodeId: string, patch: Record<string, unknown>, updatedAt: number = Date.now()): boolean {
+    const ok = this.storage.updatePayload(nodeId, patch, updatedAt);
+    const g = this.graph.getNode(nodeId);
+    if (g) {
+      g.payload = { ...g.payload, ...patch };
+      g.updatedAt = updatedAt;
+    }
+    return ok;
+  }
+
   public deleteNode(nodeId: string) {
     this.storage.deleteNode(nodeId);
     this.graph.removeNode(nodeId);
@@ -161,6 +175,8 @@ export class NeuroSwarmMesh {
        * (number) place it in an episode so query-time episode expansion can find its neighbours.
        */
       payload?: Record<string, any>;
+      /** Creation time (epoch ms). Default now; simulations and imports backdate memories. */
+      createdAt?: number;
     } = {}
   ): { nodeId: string; extractedTriplets: any[] } {
     const cleanText = text.trim();
@@ -184,8 +200,8 @@ export class NeuroSwarmMesh {
         text: cleanText,
         triplets,
       },
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: options.createdAt ?? Date.now(),
+      updatedAt: options.createdAt ?? Date.now(),
     };
 
     this.ingestNode(node, cleanText);

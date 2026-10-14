@@ -219,6 +219,24 @@ export class SQLiteStorage {
     }
   }
 
+  /**
+   * Merge fields into a node's payload without touching the full-text index (for lifecycle fields such
+   * as strength and last recall, which change on every recall). The cached node object is updated in
+   * place so callers holding it see the change.
+   */
+  public updatePayload(id: string, patch: Record<string, unknown>, updatedAt: number = Date.now()): boolean {
+    const node = this.getNodeById(id);
+    if (!node) return false;
+    const payload = { ...node.payload, ...patch };
+    this.db.run(`UPDATE nodes SET payload = ?, updated_at = ? WHERE id = ?`, [JSON.stringify(payload), updatedAt, id]);
+    const cached = this.nodeCache?.find((n) => n.id === id);
+    if (cached) {
+      cached.payload = payload;
+      cached.updatedAt = updatedAt;
+    }
+    return true;
+  }
+
   public deleteNode(id: string) {
     this.nodeCache = null;
     this.vectorCache?.delete(id);

@@ -53,9 +53,16 @@ async function main() {
       const query = positional.join(" ").trim();
       if (!query) throw new Error('usage: nsm recall "<query>" [--k=N] [--json]');
       const store = new MemoryStore();
-      const r = await store.recall(query, typeof flags.k === "string" ? Number(flags.k) : undefined);
+      const r = await store.recall(query, typeof flags.k === "string" ? Number(flags.k) : undefined, { activeOnly: flags["active-only"] === true });
       out(flags.json ? JSON.stringify(r, null, 2) : r.prompt);
-      log(`[nsm] ${r.memories.length} memories, ${r.pinned.length} pinned, ${r.latencyMs.toFixed(0)} ms${r.neural ? ", local models" : ""}`);
+      log(`[nsm] ${r.memories.length} memories, ${r.pinned.length} pinned, ${r.flags.length} flags, ${r.latencyMs.toFixed(0)} ms${r.neural ? ", local models" : ""}`);
+      await store.close();
+      return;
+    }
+    case "sweep": {
+      const store = new MemoryStore();
+      const r = store.sweep();
+      out(`sweep: ${r.demoted} demoted, ${r.deleted} deleted, ${r.kept} kept`);
       await store.close();
       return;
     }
@@ -69,8 +76,8 @@ async function main() {
     }
     case "list": {
       const store = new MemoryStore();
-      const items = store.list({ pinned: flags.pinned === true ? true : undefined, limit: typeof flags.limit === "string" ? Number(flags.limit) : 50 });
-      out(items.length ? items.map((m) => `${m.createdAt.slice(0, 10)}  ${m.pinned ? "[pinned] " : ""}${m.text}  (${m.id})`).join("\n") : "(no memories)");
+      const items = store.list({ pinned: flags.pinned === true ? true : undefined, limit: typeof flags.limit === "string" ? Number(flags.limit) : 50, includeArchived: flags.archived === true });
+      out(items.length ? items.map((m) => `${m.createdAt.slice(0, 10)}  ${m.pinned ? "[pinned] " : ""}${m.state === "archived" ? "[archived] " : ""}${m.text}  (${m.id}, strength ${m.strength.toFixed(2)})`).join("\n") : "(no memories)");
       await store.close();
       return;
     }
@@ -149,7 +156,8 @@ async function main() {
         `  nsm remember "<text>" [--pin]      store a memory (or a pinned rule)\n` +
         `  nsm recall "<query>" [--k=N]       what do I know about ...\n` +
         `  nsm forget <id>\n` +
-        `  nsm list [--pinned] [--limit=N]\n` +
+        `  nsm list [--pinned] [--archived] [--limit=N]\n` +
+        `  nsm sweep                          apply forgetting: faded, idle memories are archived (not deleted)\n` +
         `  nsm models install | status | off  on-device models (better recall, ~700 ms instead of ~6 ms)\n` +
         `  nsm setup claude-code|cursor|codex|generic\n` +
         `  nsm stats | doctor | --version\n\n` +
