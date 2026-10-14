@@ -79,6 +79,12 @@ machine). Override the location with `NSM_HOME`.
 * **Storage**: SQLite with an FTS5 index (Porter-stemmed BM25), a phrase leg and a substring leg
   fused by reciprocal rank fusion. Visibility filtering happens inside every leg.
 * **Pinned rules**: memories marked `--pin` are delivered on every recall, matched or not.
+* **A lifecycle, from ACM**: every memory has a strength that decays over about 90 days and is
+  reinforced when recalled (and a little when its neighbours are). `nsm sweep` archives memories that
+  have faded and gone unrecalled for 90 days; they stop competing on weak cues but a direct question
+  still reaches them and brings them back. Nothing is deleted unless you ask.
+* **Absence flags**: when a routine you kept mentioning on a regular rhythm has gone quiet, recall says
+  so in an `[ANOMALY FLAGS]` slot above the memories, with no model involved.
 * **Optional local models**: `bge-small-en-v1.5` for a dense leg (384-d, fused into the seeds) and
   `ms-marco-MiniLM-L-6-v2` as a cross-encoder over the top 50. Both run through ONNX via
   `@huggingface/transformers`, an optional dependency.
@@ -124,8 +130,18 @@ questions. Any contribution from the graph: clause-extractor concepts, term node
 each measured and none helped. Fast and accurate in one setting: 6 ms gets you the first row, 688 ms
 the second.
 
-The full campaign, 24 arms including label weighting, episode expansion and a larger reranker that were
-measured and rejected, is in `bench/RESULTS.md`; the design is in [NSM-SPEC.md](NSM-SPEC.md).
+**Lifecycle, 180 simulated days** (LoCoMo dev, half the questions asked along the way, daily sweep):
+never-asked questions are answered at 63.8% on a fresh store, 63.8% with forgetting by demotion (identical
+answers), and 47.6% with forgetting by deletion (p = 5e-9). Archiving instead of deleting costs nothing.
+
+**Absence flags** (held-out test split of the synthetic routine dataset): the no-model detector flags 50%
+of routines that stopped, with one false flag in 26 continuing routines, and the agent notices the stopped
+routine in 50.0% of answers with the flag against 9.1% without (p = 0.004), with no rise in invented
+anomalies. MemVault's hosted embedding detector reaches 54.5% against 4.5% on the same questions.
+
+The full campaign, 24 retrieval arms including label weighting, episode expansion and a larger reranker
+that were measured and rejected, plus the lifecycle and absence runs, is in `bench/RESULTS.md`; the design
+is in [NSM-SPEC.md](NSM-SPEC.md).
 
 ## Development
 

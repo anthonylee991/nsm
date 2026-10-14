@@ -59,8 +59,18 @@ export interface StoreOptions {
   reinforce?: boolean;
   /** Spread a smaller reinforcement to each recalled memory's associates (default true). */
   spread?: boolean;
-  /** Family similarity floors for absence flags: cosine when vectors exist (default 0.45), else lexical Jaccard (default 0.3). */
+  /**
+   * Family similarity floors for absence flags: lexical Jaccard (default 0.15, chosen on the dev split
+   * of the absence test and confirmed on test) or cosine when the store has vectors (default 0.6).
+   */
   absenceSimilarity?: { cosine?: number; lexical?: number };
+  /**
+   * How absence-flag families are found. "lexical" (default) uses word overlap; "cosine" uses stored
+   * vectors when every recalled memory has one. Measured on the absence test: lexical flagged 65% of
+   * stopped routines with no false flags on dev; cosine from the small local embedder did worse at
+   * every floor.
+   */
+  absenceFamilies?: "lexical" | "cosine";
 }
 
 /**
@@ -77,6 +87,7 @@ export class MemoryStore {
   private readonly reinforce: boolean;
   private readonly spread: boolean;
   private readonly absenceSimilarity: { cosine: number; lexical: number };
+  private readonly absenceFamilies: "lexical" | "cosine";
 
   constructor(options: StoreOptions = {}) {
     this.config = options.config ?? loadConfig();
@@ -85,7 +96,8 @@ export class MemoryStore {
     this.forgetting = options.forgetting ?? DEFAULT_FORGETTING;
     this.reinforce = options.reinforce ?? true;
     this.spread = options.spread ?? true;
-    this.absenceSimilarity = { cosine: options.absenceSimilarity?.cosine ?? 0.45, lexical: options.absenceSimilarity?.lexical ?? 0.3 };
+    this.absenceSimilarity = { cosine: options.absenceSimilarity?.cosine ?? 0.6, lexical: options.absenceSimilarity?.lexical ?? 0.15 };
+    this.absenceFamilies = options.absenceFamilies ?? "lexical";
     const neural: NeuralConfig = {};
     if (this.neural) {
       const dir = modelDir();
@@ -309,7 +321,7 @@ export class MemoryStore {
       for (let i = 0; i < va.length; i++) s += va[i]! * vb[i]!;
       return s;
     };
-    const useVectors = vectors.size > 0 && recalled.every((n) => vectors.has(n.id));
+    const useVectors = this.absenceFamilies === "cosine" && vectors.size > 0 && recalled.every((n) => vectors.has(n.id));
     return absenceFlags(
       recalled.map(toDated), all, now,
       useVectors ? cosine : lexicalSimilarity,

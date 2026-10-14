@@ -227,7 +227,31 @@ top 3 hits after them (−4 / −5 points at 5 / 10 items, p < 0.001); the bge-b
 2.5x slower ingest); bge-reranker-base over 20 candidates, quantised (−3 points at 20 items, p = 0.005,
 1.2 s per query; over 50 candidates it takes 3–5 s on this CPU).
 
-### 4.3 Defaults (2026-10-14)
+### 4.3 Lifecycle and absence (measured 2026-10-14)
+
+The product layer (`src/app/store.ts`) carries ACM's lifecycle as pure functions (`src/lifecycle`):
+strength `S(t) = S0 · exp(−t/τ)` with `τ = 30 · (1 + 0.25 · min(boosts, 20))` days, reinforcement on
+recall `S += 0.17 · ln(1 + n)`, spreading of a tenth of that to same-hour memories (or vector neighbours
+at cosine ≥ 0.65), rank score `0.75 · relevance + 0.25 · S'` where a cue with relevance ≥ 0.4 reactivates
+`S'` to 1, and forgetting by demotion (strength ≤ 0.02 and no recall for 90 days → archived; still a
+candidate; recall reactivates). Absence flags: for each of the top 10 recalled memories, its family is the
+memories with word-overlap Jaccard ≥ 0.15 (up to 12); a family of ≥ 5 at regular intervals (CV < 1) whose
+last entry is ≥ 3 median intervals (and ≥ 4 days) ago is flagged.
+
+Measured through the MemVault harness (`bench/nsm-lifecycle-sim.ts`, `bench/run-surprisal.ts`):
+
+| Test | Result |
+| :--- | :--- |
+| 180 simulated days, LoCoMo dev, never-asked questions @10 | fresh 63.8%, demote 63.8% (identical answers), delete 47.6% (p = 5e-9) |
+| Evidence still competing after 180 days | demote 69.6%, demote without spreading 58.8%, delete 61.2% (and 39% gone for good) |
+| Absence flags, test split | 50% of stopped routines flagged, 1 of 26 continuing routines falsely flagged |
+| Answers noticing a stopped routine, test | 50.0% with flags vs 9.1% without (9 vs 0 discordant, p = 0.004); false alarms unchanged |
+
+Not in NSM: surprisal flags for an entry that breaks its routine's pattern, which need a model judge.
+Cosine families from the local embedder flagged fewer stopped routines than word overlap at every floor
+(best 50% vs 65% on dev) and are off by default.
+
+### 4.4 Defaults (2026-10-14)
 
 `MeshConfig.storage`: `tokenizer: "porter"`, `phraseLeg: true`, `substringLeg: true`, `prefixMatch: true`,
 `labelWeight: 1`. `MeshConfig.graph`: `clausie: true` (nodes exist for PAE and supersession),
