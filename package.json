@@ -1,6 +1,6 @@
 {
   "name": "@skillvault/nsm",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Neuro-Swarm Mesh (NSM): a zero-LLM, zero-embedding agent memory: SQLite FTS5 BM25 storage, in-memory graph spreading activation, pheromone evaporation and rule-based OpenIE extraction.",
   "type": "module",
   "main": "src/index.ts",
@@ -8,7 +8,8 @@
   "scripts": {
     "test": "bun test",
     "test:watch": "bun test --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "cli": "bun run bin/nsm.ts"
   },
   "keywords": [
     "memory",
@@ -29,5 +30,16 @@
   },
   "optionalDependencies": {
     "@huggingface/transformers": "3.5.2"
-  }
+  },
+  "bin": {
+    "nsm": "bin/nsm.ts"
+  },
+  "files": [
+    "bin",
+    "src",
+    "install.sh",
+    "README.md",
+    "NSM-SPEC.md",
+    "LICENSE"
+  ]
 }
