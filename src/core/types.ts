@@ -105,7 +105,7 @@ export const DEFAULT_SOURCE_AUTHORITY: Record<string, number> = {
 };
 
 export interface MemoryQueryOptions {
-  /** Maximum candidate seeds retrieved via lexical hybrid search (default: 16) */
+  /** Maximum candidate seeds from the fused retrieval legs (default: 50; 100 when a dense leg is configured) */
   lexicalLimit?: number;
   /** Maximum graph hops for spreading activation (default: 2) */
   maxHops?: number;
@@ -113,7 +113,7 @@ export interface MemoryQueryOptions {
   hopDecay?: number;
   /** Minimum activation energy threshold to continue spreading (default: 0.05) */
   minEnergyThreshold?: number;
-  /** Maximum items retained per semantic category after lateral inhibition (default: 3) */
+  /** Maximum items retained per node type after lateral inhibition (default: 10) */
   lateralInhibitionMaxPerCategory?: number;
   /** External ambient key-value map to merge into PAE context */
   ambientContext?: Record<string, string>;
@@ -123,6 +123,16 @@ export interface MemoryQueryOptions {
   asker?: VisibleSet;
   /** Multi-turn conversational focus state (attractor basin to prevent prompt flickering) */
   focus?: FocusState;
+  /**
+   * Episode expansion: after inhibition, add the memories within `radius` ordinals of the first
+   * `topSeeds` results that carry `payload.episodeId` and `payload.ordinal`. Off by default.
+   */
+  episodeExpansion?: { topSeeds?: number; radius?: number };
+  /**
+   * Fan damping in spreading activation (ACT-R fan effect): energy leaving a node is divided by
+   * 1 + ln(number of its edges), so hub nodes cannot flood the mesh. Off by default.
+   */
+  fanDamping?: boolean;
 }
 
 export interface RetrievalTelemetry {

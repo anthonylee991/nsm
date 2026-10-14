@@ -120,8 +120,10 @@ export class AdjacencyGraph {
     maxHops: number = 2,
     decayPerHop: number = 0.45,
     minEnergyThreshold: number = 0.05,
-    asker?: VisibleSet
+    asker?: VisibleSet,
+    extra: { fanDamping?: boolean } = {}
   ): ScoredMemoryNode[] {
+    const fanDamping = extra.fanDamping === true;
     const energyMap = new Map<string, { energy: number; reasons: string[] }>();
 
     // 1. Initialize seed energy (filtered by asker)
@@ -156,6 +158,10 @@ export class AdjacencyGraph {
           ...(this.incoming.get(currId) ?? []),
         ];
 
+        // Fan effect (Anderson, ACT-R): a node spreads its activation across all of its associates,
+        // so a hub connected to everything passes little to each. Damping = 1 + ln(fan).
+        const damping = fanDamping && neighbors.length > 1 ? 1 + Math.log(neighbors.length) : 1;
+
         for (const edge of neighbors) {
           // Both lists store the neighbour in targetId (incoming entries point back at the source).
           const actualTargetId = edge.targetId;
@@ -164,7 +170,7 @@ export class AdjacencyGraph {
           // Prevent immediate back-pulse reflection
           if (predecessors.get(currId)?.has(actualTargetId)) continue;
 
-          const propagatedEnergy = currEnergy * edge.weight * (1 - decayPerHop);
+          const propagatedEnergy = (currEnergy * edge.weight * (1 - decayPerHop)) / damping;
           if (propagatedEnergy < minEnergyThreshold) continue;
 
           const targetNode = this.nodes.get(actualTargetId);

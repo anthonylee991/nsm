@@ -155,7 +155,7 @@ Unstructured text is parsed without neural models using rule-based Open Informat
 
 ### 3.7 Peripheral Attention Engineering (PAE)
 
-The final retrieved context is slotted into a compact, deterministic format designed for minimal token overhead (<150–250 tokens):
+The final retrieved context is slotted into a deterministic format. Its size follows the lateral inhibition cap: with the 2026-10-14 default of up to 10 memories per node type it is about 900–1,100 tokens on conversational memories (measured on LoCoMo turns: 3,500–4,400 characters); the earlier cap of 3 gave 150–250 tokens and 55.9% on the test split, which is why it was raised:
 ```
 [AMBIENT CONTEXT]
 Location: Metro Area
@@ -195,10 +195,46 @@ ingested in 1.2 s into 1,735 nodes (1,366 of them concept nodes) and 1,786 edges
 query at that size. Latency grows with the store because `query` scans every node for scope detection
 and substring matching, and `ingestText` scans every node for conflict resolution on each insert.
 
-**Accuracy has not been measured.** NSM is registered in the harness (`bench/systems/nsm.ts`) so
-it can be scored on the same 885 held-out LoCoMo questions, answer model and judges as every system in
-`bench/RESULTS.md`. Until that run is recorded there, this document makes no accuracy claim and no
-comparison with any other system.
+**LoCoMo, held-out test split** (885 questions, same answer model, judges and prompts as every system
+in `bench/RESULTS.md`; run `nsm-test`):
+
+| Configuration | @5 | @10 | @20 | @50 | Recall p50 |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| As first audited, 2026-10-13 (unicode61 BM25 + substring, clause graph, concept nodes indexed) | 60.5 | 68.1 | 75.0 | 80.3 | 27 ms |
+| No model, 2026-10-14 defaults (porter BM25 + phrase + substring, concept nodes graph-only) | 62.3 | 69.4 | 75.5 | 81.8 | 6 ms |
+| Local models (bge-small-en-v1.5 dense leg, 100 fused seeds, ms-marco-MiniLM-L-6-v2 rerank) | 74.8 | 78.8 | 81.5 | 83.4 | 688 ms |
+
+Both 2026-10-14 configurations were chosen on the dev split and confirmed once on test. The local-model
+configuration beats the audited one at every cutoff (p ≤ 1e-3), equals Mem0 cloud's top 50 on the 776
+questions both answered (p = 0.30) and MemVault's pre-October recall at ten items (p = 0.94), and is
+5.8 points behind MemVault's production default at equal tokens and 8.5 behind its high-context mode
+(p ≤ 2e-6). The no-model gains over the audited version are about one point and not significant on
+test. The campaign (24 arms, each paired against the baseline) is in `bench/RESULTS.md`.
+
+**The graph adds nothing, in three designs.** With spreading activation off (`nsm-lexical`) test accuracy
+is unchanged at every cutoff (80.8% vs 80.3% at 50, p = 0.66). Term nodes (one per distinctive word)
+with ACT-R fan damping (§3.3) made no difference at 50 seeds on dev (p ≥ 0.3), and with 20 lexical seeds
+the memories the graph added ranked below the lexical seeds they replaced (75.3% vs 76.8% at 50, n.s.).
+Two reasons are visible in the code: the clause extractor turns whole clauses into concept nodes ("sorry
+about the job the studio sounds great"), so few memories share one; and common words connect to
+everything, so activation through them carries no information even when damped.
+
+### 4.2 Measured and rejected (dev split, paired against the baseline)
+
+bm25 label weighting (no effect: the weights had been applied to the unindexed id column); removing the
+substring leg (−4 points at 5 items, p = 0.04); episode expansion that inserts the neighbours of the
+top 3 hits after them (−4 / −5 points at 5 / 10 items, p < 0.001); the bge-base embedder (+0.5, n.s.,
+2.5x slower ingest); bge-reranker-base over 20 candidates, quantised (−3 points at 20 items, p = 0.005,
+1.2 s per query; over 50 candidates it takes 3–5 s on this CPU).
+
+### 4.3 Defaults (2026-10-14)
+
+`MeshConfig.storage`: `tokenizer: "porter"`, `phraseLeg: true`, `substringLeg: true`, `prefixMatch: true`,
+`labelWeight: 1`. `MeshConfig.graph`: `clausie: true` (nodes exist for PAE and supersession),
+`searchableConcepts: false`, `terms: false`. `query()`: 50 lexical seeds, up to 10 memories per node type
+after lateral inhibition, 2 hops, no fan damping, no episode expansion. With `neural.embedder` set:
+100 fused seeds; with `neural.reranker` set: the top 50 memories reranked. All other options remain
+available and off.
 
 ### 4.1 Known limits of the current implementation
 

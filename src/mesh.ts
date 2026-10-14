@@ -1,4 +1,4 @@
-import { SQLiteStorage } from "./core/storage/sqlite.js";
+import { SQLiteStorage, extractContentTerms, type StorageOptions } from "./core/storage/sqlite.js";
 import { AdjacencyGraph } from "./core/graph/adjacency.js";
 import { ClausIEv2Extractor } from "./extractors/clausie_v2.js";
 import { IntegrationManager } from "./integrations/manager.js";
@@ -12,22 +12,55 @@ import type {
   NodeType,
   EntityCategory,
   FocusState,
+  VisibleSet,
 } from "./core/types.js";
 import { canSee } from "./core/types.js";
+import type { NeuralConfig } from "./neural/types.js";
 
 export interface MeshConfig {
   dbPath?: string;
   autoHydrate?: boolean;
+  /**
+   * Optional local neural components (dense leg and/or cross-encoder rerank). Off by default. With an
+   * embedder set, call `embedPending()` after ingest and use `queryAsync()` for recall.
+   */
+  neural?: NeuralConfig;
+  /** Retrieval options for the storage layer (tokenizer, legs, weights). */
+  storage?: StorageOptions;
+  /**
+   * Which nodes `ingestText` links a memory to. `clausie` (default on): the objects of extracted
+   * clauses become concept nodes. `terms` (default off): each distinctive content word of the memory
+   * becomes a term node, so memories that share rare words are neighbours in the graph.
+   */
+  graph?: {
+    clausie?: boolean;
+    terms?: boolean;
+    /**
+     * Whether concept and term nodes are in the full-text index (default false: they are reached only
+     * through the graph, so lexical seeds are always memories).
+     */
+    searchableConcepts?: boolean;
+  };
 }
 
 export class NeuroSwarmMesh {
   private storage: SQLiteStorage;
   private graph: AdjacencyGraph;
   private integrations: IntegrationManager;
+  private readonly graphConfig: { clausie: boolean; terms: boolean; searchableConcepts: boolean };
+  private readonly neural: NeuralConfig;
+  /** episodeId -> ordinal -> node id, for episode expansion at query time. */
+  private episodes: Map<string, Map<number, string>> = new Map();
 
   constructor(config: MeshConfig = {}) {
     const dbPath = config.dbPath || ":memory:";
-    this.storage = new SQLiteStorage(dbPath);
+    this.storage = new SQLiteStorage(dbPath, config.storage);
+    this.graphConfig = {
+      clausie: config.graph?.clausie ?? true,
+      terms: config.graph?.terms ?? false,
+      searchableConcepts: config.graph?.searchableConcepts ?? false,
+    };
+    this.neural = config.neural ?? {};
     this.graph = new AdjacencyGraph();
     this.integrations = new IntegrationManager(this, dbPath);
 
@@ -43,6 +76,8 @@ export class NeuroSwarmMesh {
     const nodes = this.storage.getAllNodes();
     const edges = this.storage.getAllEdges();
     this.graph.hydrate(nodes, edges);
+    this.episodes.clear();
+    for (const n of nodes) this.indexEpisode(n);
   }
 
   public getStorage(): SQLiteStorage {
@@ -57,18 +92,37 @@ export class NeuroSwarmMesh {
     return this.integrations;
   }
 
+  private indexEpisode(node: MemoryNode) {
+    const episodeId = node.payload?.episodeId;
+    const ordinal = node.payload?.ordinal;
+    if (episodeId === undefined || episodeId === null || typeof ordinal !== "number") return;
+    const key = String(episodeId);
+    let byOrdinal = this.episodes.get(key);
+    if (!byOrdinal) {
+      byOrdinal = new Map();
+      this.episodes.set(key, byOrdinal);
+    }
+    byOrdinal.set(ordinal, node.id);
+  }
+
   /**
    * Ingest structured MemoryNode into durable SQLite and RAM graph
    */
-  public ingestNode(node: MemoryNode, contentForFts?: string) {
-    this.storage.upsertNode(node, contentForFts);
+  public ingestNode(node: MemoryNode, contentForFts?: string, searchable: boolean = true) {
+    this.storage.upsertNode(node, contentForFts, searchable);
     this.graph.addNode(node);
+    this.indexEpisode(node);
     this.autoResolveConflicts(node);
   }
 
   public deleteNode(nodeId: string) {
     this.storage.deleteNode(nodeId);
     this.graph.removeNode(nodeId);
+    for (const byOrdinal of this.episodes.values()) {
+      for (const [ordinal, id] of byOrdinal) {
+        if (id === nodeId) byOrdinal.delete(ordinal);
+      }
+    }
   }
 
   /**
@@ -102,6 +156,11 @@ export class NeuroSwarmMesh {
       nodeType?: NodeType;
       category?: EntityCategory;
       customId?: string;
+      /**
+       * Extra payload fields stored with the memory. `episodeId` (string | number) and `ordinal`
+       * (number) place it in an episode so query-time episode expansion can find its neighbours.
+       */
+      payload?: Record<string, any>;
     } = {}
   ): { nodeId: string; extractedTriplets: any[] } {
     const cleanText = text.trim();
@@ -121,6 +180,7 @@ export class NeuroSwarmMesh {
       authority,
       entityCategory,
       payload: {
+        ...(options.payload ?? {}),
         text: cleanText,
         triplets,
       },
@@ -130,8 +190,29 @@ export class NeuroSwarmMesh {
 
     this.ingestNode(node, cleanText);
 
+    // Term nodes: one per distinctive content word, shared across memories.
+    if (this.graphConfig.terms) {
+      for (const term of extractContentTerms(cleanText)) {
+        const termNodeId = `term-${term.replace(/[^a-z0-9]+/g, "-")}`;
+        if (!this.graph.getNode(termNodeId)) {
+          this.ingestNode({
+            id: termNodeId,
+            nodeType: "concept",
+            label: term,
+            source: "inferred",
+            authority: 0.5,
+            entityCategory: "concept",
+            payload: { term },
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }, undefined, this.graphConfig.searchableConcepts);
+        }
+        this.ingestEdge({ sourceId: nodeId, targetId: termNodeId, relation: "mentions", weight: 1.0, lastActivated: Date.now() });
+      }
+    }
+
     // Wire up relational entities extracted from triplets
-    for (let i = 0; i < triplets.length; i++) {
+    for (let i = 0; i < (this.graphConfig.clausie ? triplets.length : 0); i++) {
       const trip = triplets[i];
       if (trip.object && trip.object.length > 1) {
         const objSlug = trip.object.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -149,7 +230,7 @@ export class NeuroSwarmMesh {
             payload: { name: trip.object },
             createdAt: Date.now(),
             updatedAt: Date.now(),
-          });
+          }, undefined, this.graphConfig.searchableConcepts);
         }
 
         // Link fact node to object entity
@@ -174,12 +255,12 @@ export class NeuroSwarmMesh {
   public autoResolveConflicts(newNode: MemoryNode) {
     if ((newNode.authority ?? 1.0) < 0.90) return;
 
-    const allNodes = this.storage.getAllNodes();
     const isPersonalLocation =
       (newNode.entityCategory === "person" || newNode.source === "user_fact" || newNode.nodeType === "invariant") &&
       /live|reside|residence|location/i.test(newNode.label + " " + JSON.stringify(newNode.payload));
 
     if (isPersonalLocation) {
+      const allNodes = this.storage.getAllNodes();
       for (const existing of allNodes) {
         if (existing.id === newNode.id) continue;
         const existAuth = existing.authority ?? 1.0;
@@ -199,21 +280,139 @@ export class NeuroSwarmMesh {
   }
 
   /**
+   * Episode expansion: for the first `topSeeds` results that belong to an episode, add the
+   * memories within `radius` ordinals of them (the turns around a hit), after those seeds and
+   * ahead of the rest. Neighbours are ordered by seed rank, then ordinal.
+   */
+  private expandEpisodes(
+    salient: ScoredMemoryNode[],
+    topSeeds: number,
+    radius: number,
+    asker?: VisibleSet
+  ): ScoredMemoryNode[] {
+    const present = new Set(salient.map((s) => s.node.id));
+    const seeds: { item: ScoredMemoryNode; index: number }[] = [];
+    for (let i = 0; i < salient.length && seeds.length < topSeeds; i++) {
+      const p = salient[i]!.node.payload;
+      if (p?.episodeId !== undefined && p?.episodeId !== null && typeof p?.ordinal === "number") {
+        seeds.push({ item: salient[i]!, index: i });
+      }
+    }
+    if (seeds.length === 0) return salient;
+
+    const additions: ScoredMemoryNode[] = [];
+    for (const { item } of seeds) {
+      const byOrdinal = this.episodes.get(String(item.node.payload.episodeId));
+      if (!byOrdinal) continue;
+      const ordinal = item.node.payload.ordinal as number;
+      for (let d = -radius; d <= radius; d++) {
+        if (d === 0) continue;
+        const neighbourId = byOrdinal.get(ordinal + d);
+        if (!neighbourId || present.has(neighbourId)) continue;
+        const node = this.graph.getNode(neighbourId) ?? this.storage.getNodeById(neighbourId);
+        if (!node) continue;
+        if (asker && !canSee(asker, node.gate, node.scope || node.payload?.scope)) continue;
+        present.add(neighbourId);
+        additions.push({
+          node,
+          score: item.score * 0.5,
+          matchReasons: [`Episode neighbour of ${item.node.id} (${d > 0 ? "+" : ""}${d})`],
+        });
+      }
+    }
+    if (additions.length === 0) return salient;
+
+    const insertAt = seeds[seeds.length - 1]!.index + 1;
+    return [...salient.slice(0, insertAt), ...additions, ...salient.slice(insertAt)];
+  }
+
+  /**
+   * Embed every memory node that has no vector yet (requires `neural.embedder`). Returns the count.
+   * Call after a batch of ingests; the dense leg only sees embedded memories.
+   */
+  public async embedPending(batchSize: number = 32): Promise<number> {
+    const embedder = this.neural.embedder;
+    if (!embedder) return 0;
+    const ids = this.storage.getUnembeddedIds();
+    for (let i = 0; i < ids.length; i += batchSize) {
+      const batch = ids.slice(i, i + batchSize);
+      const texts = batch.map((id) => {
+        const n = this.storage.getNodeById(id);
+        return n ? String(n.payload?.text ?? n.label) : "";
+      });
+      const vecs = await embedder.embed(texts, "document");
+      batch.forEach((id, j) => this.storage.upsertVector(id, embedder.name, vecs[j]!));
+    }
+    return ids.length;
+  }
+
+  /**
+   * `query()` plus the optional neural components: a dense leg fused with the lexical seeds, and a
+   * cross-encoder rerank of the top memories. Both run in-process. Latency includes model time.
+   */
+  public async queryAsync(queryText: string, options: MemoryQueryOptions = {}): Promise<RetrievalResult> {
+    const tStart = performance.now();
+    const extraLegs: { name: string; ids: string[] }[] = [];
+    if (this.neural.embedder) {
+      const [qv] = await this.neural.embedder.embed([queryText], "query");
+      const limit = this.neural.denseLimit ?? options.lexicalLimit ?? 16;
+      const hits = this.storage.searchDense(qv!, limit, options.asker);
+      extraLegs.push({ name: "Dense", ids: hits.map((h) => h.id) });
+    }
+    const result = this.runQuery(queryText, options, extraLegs);
+
+    if (this.neural.reranker) {
+      const candidates = this.neural.rerankCandidates ?? 50;
+      const isMemory = (n: ScoredMemoryNode) => typeof n.node.payload?.text === "string" || n.node.nodeType !== "concept";
+      const memories = result.salientNodes.filter(isMemory).slice(0, candidates);
+      const rest = result.salientNodes.filter((n) => !memories.includes(n));
+      if (memories.length > 1) {
+        const scores = await this.neural.reranker.score(
+          queryText,
+          memories.map((m) => String(m.node.payload?.text ?? m.node.label))
+        );
+        const reranked = memories
+          .map((m, i) => ({
+            ...m,
+            score: scores[i]!,
+            matchReasons: [...m.matchReasons, `Rerank ${scores[i]!.toFixed(2)}`],
+          }))
+          .sort((a, b) => b.score - a.score);
+        result.salientNodes = [...reranked, ...rest];
+        result.paePrompt = this.graph.formatPAESlots(result.salientNodes, options.ambientContext);
+      }
+    }
+    result.telemetry.totalDurationMs = performance.now() - tStart;
+    return result;
+  }
+
+  /**
    * The Master Retrieval Pipeline:
    * 1. Lexical Scout Search: SQLite FTS5 BM25 + Substring Reciprocal Rank Fusion (RRF)
    * 2. Invariant & Guaranteed Node Hook
    * 3. Spreading Activation: RAM pointer traversal with Collins & Loftus decay
    * 4. Lateral Inhibition: Category capacity filtering & directed supersession
-   * 5. Peripheral Attention Engineering (PAE) Context Slotting (<150-250 tokens)
-   * 6. Ant Colony Optimization (ACO) Pheromone Reinforcement
+   * 5. Episode expansion (optional): the memories around the top hits
+   * 6. Peripheral Attention Engineering (PAE) Context Slotting (<150-250 tokens)
+   * 7. Ant Colony Optimization (ACO) Pheromone Reinforcement
    */
   public query(queryText: string, options: MemoryQueryOptions = {}): RetrievalResult {
+    return this.runQuery(queryText, options, []);
+  }
+
+  private runQuery(
+    queryText: string,
+    options: MemoryQueryOptions,
+    extraLegs: { name: string; ids: string[] }[]
+  ): RetrievalResult {
     const tStart = performance.now();
-    const lexicalLimit = options.lexicalLimit ?? 16;
+    // Defaults = the configuration confirmed on the LoCoMo test split on 2026-10-14 (NSM-SPEC §4.3):
+    // 50 seeds without a dense leg, 100 fused seeds with one; up to 10 memories per node type.
+    const lexicalLimit = options.lexicalLimit ?? (this.neural.embedder ? 100 : 50);
     const maxHops = options.maxHops ?? 2;
     const hopDecay = options.hopDecay ?? 0.45;
     const minEnergyThreshold = options.minEnergyThreshold ?? 0.05;
-    const lateralMax = options.lateralInhibitionMaxPerCategory ?? 3;
+    const lateralMax = options.lateralInhibitionMaxPerCategory ?? 10;
     const asker = options.asker;
 
     // Focus hysteresis state management
@@ -268,7 +467,7 @@ export class NeuroSwarmMesh {
 
     // 1. Lexical Scout Search with Invariant I1: Visibility filter inside retrieval
     const tSearchStart = performance.now();
-    let seedHits = this.storage.searchHybridRRF(queryText, lexicalLimit, 60, asker);
+    let seedHits = this.storage.searchHybridRRF(queryText, lexicalLimit, 60, asker, extraLegs);
     const searchDurationMs = performance.now() - tSearchStart;
 
     // Normalize RRF scores so top lexical matches scale to 1.0
@@ -334,21 +533,32 @@ export class NeuroSwarmMesh {
       maxHops,
       hopDecay,
       minEnergyThreshold,
-      asker
+      asker,
+      { fanDamping: options.fanDamping }
     );
     const activationDurationMs = performance.now() - tActivationStart;
 
     // 4. Lateral Inhibition
     const tInhibitionStart = performance.now();
-    const salientNodes = this.graph.lateralInhibition(activatedNodes, lateralMax, asker);
+    let salientNodes = this.graph.lateralInhibition(activatedNodes, lateralMax, asker);
     const inhibitionDurationMs = performance.now() - tInhibitionStart;
 
-    // 5. PAE Context Slotting
+    // 5. Episode expansion (off unless asked for)
+    if (options.episodeExpansion) {
+      salientNodes = this.expandEpisodes(
+        salientNodes,
+        options.episodeExpansion.topSeeds ?? 3,
+        options.episodeExpansion.radius ?? 1,
+        asker
+      );
+    }
+
+    // 6. PAE Context Slotting
     const paePrompt = this.graph.formatPAESlots(salientNodes, options.ambientContext);
 
-    // 6. Ant Colony Optimization (ACO) Reinforcement
+    // 7. Ant Colony Optimization (ACO) Reinforcement
     if (salientNodes.length >= 2) {
-      this.graph.reinforceEdge(salientNodes[0].node.id, salientNodes[1].node.id, 0.15);
+      this.graph.reinforceEdge(salientNodes[0]!.node.id, salientNodes[1]!.node.id, 0.15);
     }
 
     const totalDurationMs = performance.now() - tStart;
@@ -403,5 +613,12 @@ export class NeuroSwarmMesh {
   public close() {
     this.storage.close();
     this.integrations.close();
+  }
+
+  /** close() plus releasing any loaded neural models. */
+  public async closeAsync() {
+    this.close();
+    await this.neural.embedder?.dispose?.();
+    await this.neural.reranker?.dispose?.();
   }
 }
