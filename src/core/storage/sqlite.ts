@@ -449,8 +449,8 @@ export class SQLiteStorage {
     limit: number = 10,
     k: number = 60,
     asker?: VisibleSet,
-    /** Extra ranked lists to fuse (e.g. a dense leg), best first. */
-    extraLegs: { name: string; ids: string[] }[] = []
+    /** Extra ranked lists to fuse (e.g. a dense leg), best first; `weight` scales that leg's RRF share (default 1). */
+    extraLegs: { name: string; ids: string[]; weight?: number }[] = []
   ): ScoredMemoryNode[] {
     const tokens = extractSearchTokens(query);
     const bm25Results = this.searchBM25(query, limit * 2);
@@ -461,8 +461,9 @@ export class SQLiteStorage {
 
     // 0. Extra legs (dense etc.)
     for (const leg of extraLegs) {
+      const weight = leg.weight ?? 1;
       leg.ids.forEach((id, rank) => {
-        const rrf = 1 / (k + rank + 1);
+        const rrf = weight / (k + rank + 1);
         const existing = rrfScores.get(id) ?? { score: 0, reasons: [] };
         existing.score += rrf;
         existing.reasons.push(`${leg.name} (rank ${rank + 1})`);

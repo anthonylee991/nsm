@@ -368,12 +368,12 @@ export class NeuroSwarmMesh {
    */
   public async queryAsync(queryText: string, options: MemoryQueryOptions = {}): Promise<RetrievalResult> {
     const tStart = performance.now();
-    const extraLegs: { name: string; ids: string[] }[] = [];
+    const extraLegs: { name: string; ids: string[]; weight?: number }[] = [];
     if (this.neural.embedder) {
       const [qv] = await this.neural.embedder.embed([queryText], "query");
       const limit = this.neural.denseLimit ?? options.lexicalLimit ?? 16;
       const hits = this.storage.searchDense(qv!, limit, options.asker);
-      extraLegs.push({ name: "Dense", ids: hits.map((h) => h.id) });
+      extraLegs.push({ name: "Dense", ids: hits.map((h) => h.id), weight: this.neural.denseWeight ?? 1 });
     }
     const result = this.runQuery(queryText, options, extraLegs);
 
