@@ -1,6 +1,6 @@
 {
   "name": "@skillvault/nsm",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Neuro-Swarm Mesh (NSM): a zero-LLM, zero-embedding agent memory: SQLite FTS5 BM25 storage, in-memory graph spreading activation, pheromone evaporation and rule-based OpenIE extraction.",
   "type": "module",
   "main": "src/index.ts",

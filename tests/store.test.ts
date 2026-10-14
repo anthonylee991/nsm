@@ -64,6 +64,19 @@ describe("MemoryStore", () => {
     expect(store.list({ pinned: false }).map((m) => m.text)).toEqual(["first"]);
   });
 
+  it("places memories saved in the same hour in one episode, in order", async () => {
+    const t0 = Date.UTC(2026, 0, 1, 9, 0);
+    await store.remember("first thing this morning", { createdAt: t0 });
+    await store.remember("second thing this morning", { createdAt: t0 + 10 * 60_000 });
+    await store.remember("something in the afternoon", { createdAt: t0 + 5 * 3_600_000 });
+    const nodes = store.list().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const raw = (id: string) => (store as any).mesh.getStorage().getNodeById(id).payload;
+    expect(raw(nodes[0]!.id).episodeId).toBe(raw(nodes[1]!.id).episodeId);
+    expect(raw(nodes[0]!.id).ordinal).toBe(0);
+    expect(raw(nodes[1]!.id).ordinal).toBe(1);
+    expect(raw(nodes[2]!.id).episodeId).not.toBe(raw(nodes[0]!.id).episodeId);
+  });
+
   it("persists across reopen in the same home", async () => {
     await store.remember("persisted fact about Maplewood");
     await store.close();

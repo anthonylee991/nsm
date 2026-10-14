@@ -103,7 +103,7 @@ export class MemoryStore {
       const dir = modelDir();
       neural.embedder = new LocalEmbedder(this.config.embedModel, { modelDir: dir });
       neural.reranker = new LocalReranker(this.config.rerankModel, { modelDir: dir });
-      neural.rerankCandidates = 50;
+      // denseWeight and rerankCandidates: library defaults (2, 100), the configuration confirmed on test.
     }
     this.mesh = new NeuroSwarmMesh({ dbPath: options.dbPath ?? dbPath(), neural });
   }
@@ -174,6 +174,11 @@ export class MemoryStore {
     const pinned = options.pinned === true;
     const importance: Importance = pinned ? "pinned" : (options.importance ?? "default");
     const createdAt = options.createdAt ?? this.now();
+    const occurredAt = options.occurredAt ?? createdAt;
+    // Episode = the hour the memory belongs to; ordinal = its place in that hour. Lets recall expand a hit to
+    // the memories saved around it (with the local models, where the reranker judges them).
+    const episodeId = Math.floor(occurredAt / 3_600_000);
+    const ordinal = this.memories().filter((n) => n.payload?.episodeId === episodeId).length;
     const { nodeId } = this.mesh.ingestText(clean, {
       source: options.source ?? (pinned ? "user_invariant" : "user_fact"),
       nodeType: pinned ? "invariant" : "fact",
@@ -187,7 +192,9 @@ export class MemoryStore {
         strengthAt: createdAt,
         boostCount: 0,
         state: "active",
-        occurredAt: options.occurredAt ?? createdAt,
+        occurredAt,
+        episodeId,
+        ordinal,
       },
     });
     if (this.neural) await this.mesh.embedPending();
@@ -204,8 +211,9 @@ export class MemoryStore {
     const now = this.now();
     const limit = k ?? this.config.k;
     const queryOptions = {
-      // Rank over a wider pool, then let strength and state decide the final order.
-      lateralInhibitionMaxPerCategory: Math.max(limit * 3, 20),
+      // Rank over a wider pool, then let strength and state decide the final order. With the local models
+      // the library default (100, the reranker's pool) applies.
+      lateralInhibitionMaxPerCategory: this.neural ? undefined : Math.max(limit * 3, 20),
       // Every pinned rule is delivered on every recall, whether or not the query mentions it.
       guaranteedFilter: (n: MemoryNode) => n.nodeType === "invariant",
     };

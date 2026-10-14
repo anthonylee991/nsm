@@ -24,8 +24,8 @@ export interface NeuralConfig {
   reranker?: Reranker;
   /** How many dense hits to fuse (default: the lexical limit). */
   denseLimit?: number;
-  /** Weight of the dense leg in the rank fusion relative to each lexical leg (default 1). */
+  /** Weight of the dense leg in the rank fusion relative to each lexical leg (default 2). */
   denseWeight?: number;
-  /** How many memories the reranker scores (default 50). */
+  /** How many memories the reranker scores (default 100). */
   rerankCandidates?: number;
 }

@@ -10,7 +10,7 @@ import { MemoryStore } from "../app/store.js";
  */
 const PROTOCOL_VERSION = "2025-06-18";
 export const SERVER_NAME = "nsm";
-export const SERVER_VERSION = "2.0.0";
+export const SERVER_VERSION = "2.1.0";
 
 interface Req { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: any }
 interface Res { jsonrpc: "2.0"; id: string | number | null; result?: unknown; error?: { code: number; message: string } }

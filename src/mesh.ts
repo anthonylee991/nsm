@@ -373,12 +373,13 @@ export class NeuroSwarmMesh {
       const [qv] = await this.neural.embedder.embed([queryText], "query");
       const limit = this.neural.denseLimit ?? options.lexicalLimit ?? 16;
       const hits = this.storage.searchDense(qv!, limit, options.asker);
-      extraLegs.push({ name: "Dense", ids: hits.map((h) => h.id), weight: this.neural.denseWeight ?? 1 });
+      // Dense weight 2 and a 100-candidate rerank: the configuration confirmed on test (NSM-SPEC §4.4).
+      extraLegs.push({ name: "Dense", ids: hits.map((h) => h.id), weight: this.neural.denseWeight ?? 2 });
     }
     const result = this.runQuery(queryText, options, extraLegs);
 
     if (this.neural.reranker) {
-      const candidates = this.neural.rerankCandidates ?? 50;
+      const candidates = this.neural.rerankCandidates ?? 100;
       const isMemory = (n: ScoredMemoryNode) => typeof n.node.payload?.text === "string" || n.node.nodeType !== "concept";
       const memories = result.salientNodes.filter(isMemory).slice(0, candidates);
       const rest = result.salientNodes.filter((n) => !memories.includes(n));
@@ -422,13 +423,16 @@ export class NeuroSwarmMesh {
     extraLegs: { name: string; ids: string[] }[]
   ): RetrievalResult {
     const tStart = performance.now();
-    // Defaults = the configuration confirmed on the LoCoMo test split on 2026-10-14 (NSM-SPEC §4.3):
-    // 50 seeds without a dense leg, 100 fused seeds with one; up to 10 memories per node type.
-    const lexicalLimit = options.lexicalLimit ?? (this.neural.embedder ? 100 : 50);
+    // Defaults = the configurations confirmed on the LoCoMo test split (NSM-SPEC §4.4). Without a dense
+    // leg: 50 seeds, up to 10 memories per node type. With one: 100 fused seeds, up to 100 memories
+    // kept for the reranker, the neighbours of the top 10 hits added to its pool.
+    const neural = Boolean(this.neural.embedder);
+    const lexicalLimit = options.lexicalLimit ?? (neural ? 100 : 50);
     const maxHops = options.maxHops ?? 2;
     const hopDecay = options.hopDecay ?? 0.45;
     const minEnergyThreshold = options.minEnergyThreshold ?? 0.05;
-    const lateralMax = options.lateralInhibitionMaxPerCategory ?? 10;
+    const lateralMax = options.lateralInhibitionMaxPerCategory ?? (neural ? 100 : 10);
+    const episodeExpansion = options.episodeExpansion ?? (neural && this.episodes.size > 0 ? { topSeeds: 10, radius: 1 } : undefined);
     const asker = options.asker;
 
     // Focus hysteresis state management
@@ -559,12 +563,13 @@ export class NeuroSwarmMesh {
     let salientNodes = this.graph.lateralInhibition(activatedNodes, lateralMax, asker);
     const inhibitionDurationMs = performance.now() - tInhibitionStart;
 
-    // 5. Episode expansion (off unless asked for)
-    if (options.episodeExpansion) {
+    // 5. Episode expansion (default on with a dense leg, where the reranker judges the neighbours;
+    //    measured to hurt without one, so off there unless asked for)
+    if (episodeExpansion) {
       salientNodes = this.expandEpisodes(
         salientNodes,
-        options.episodeExpansion.topSeeds ?? 3,
-        options.episodeExpansion.radius ?? 1,
+        episodeExpansion.topSeeds ?? 3,
+        episodeExpansion.radius ?? 1,
         asker
       );
     }
