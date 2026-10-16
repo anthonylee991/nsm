@@ -117,6 +117,9 @@ typed in.
 | `nsm`, on-device models (defaults) | **76.5** | **81.8** | **84.6** | **87.1** | 1,290 ms |
 | `nsm`, on-device models, 2026-10-14 morning release (reranker over 50) | 74.8 | 78.8 | 81.5 | 83.4 | 688 ms |
 | Plain hosted embedding search | 52.0 | 60.6 | 68.5 | 77.1 | 308 ms |
+| Markdown files + grep, hits ranked by query-word count | 61.1 | 68.6 | 74.2 | 78.5 | 0 ms |
+| Markdown files + grep, plain grep output order | 26.9 | 37.6 | 48.9 | 63.6 | 0 ms |
+| Markdown files + grep, whole session files (1 / 2 / 3 / 5 files) | 63.4 | 75.0 | 78.1 | 83.2 | 0 ms |
 | Mem0 cloud (776 of the questions) | | 75.3 | 81.1 | 85.6 | 468 ms |
 | MemVault production (hosted embeddings + reranker + graph) | | 87.3 | | 91.9 | 785 ms |
 
@@ -126,6 +129,16 @@ search at every size by 10 to 24 points. The cross-encoder is the largest single
 5 memories, p = 2e-14); letting it judge 100 candidates plus the memories saved around the top hits,
 with the dense leg at double weight, added the last 3.7 points (p ≤ 0.02 at every cutoff on test).
 With no model, `nsm` still beats hosted embedding search at every size at 6 ms.
+
+**Against plain markdown files and grep** (the pattern many agents and 2026 blog posts use: one note
+file per session, retrieval by case-insensitive word match, no index, no model; measured 2026-10-15,
+same split): grep works only if its hits are sorted. Ranking matching lines by how many query words
+they contain is statistically equal to `nsm` with no model at 5, 10 and 20 memories (n.s.) and 3.3
+points behind at 50 (p = 4e-3); the same hits in grep's own output order are 15 to 34 points worse
+(p < 1e-28). Reading the five best-matching whole files reaches 83.2% at 5,116 context tokens, equal to
+Mem0 cloud top-50 (n.s.) and 3.9 behind `nsm` with on-device models (p = 3e-3). Every markdown arm is
+behind every model-backed system on multi-hop questions (57% vs 72 to 80%). Instinct's reported extra
+step, a daily model pass that rewrites notes into typed fact files, was not measured.
 
 **What it does not support.** Parity with current MemVault: 2.7 points behind its production default at
 equal tokens (p = 0.014), 4.8 behind its high-context mode (p = 1e-6), mostly on multi-hop and paraphrase

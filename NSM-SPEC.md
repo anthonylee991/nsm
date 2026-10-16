@@ -215,6 +215,18 @@ candidates plus episode neighbours and a double-weight dense leg. The no-model g
 version are about one point and not significant on test. The campaign (27 retrieval arms, each paired
 against its control) is in `bench/RESULTS.md`.
 
+**Markdown files + grep, same split (run `test-markdown`, 2026-10-15; system `md-grep` in the harness).**
+One markdown file per session, one dated bullet per turn, retrieval by case-insensitive substring match of
+the question's content words (speaker names excluded), no index, no model, 0 ms recall. Lines ranked by
+how many query words they contain: 61.1 / 68.6 / 74.2 / 78.5 at 5/10/20/50, equal to the no-model `nsm`
+at 5/10/20 (n.s.) and 3.3 behind at 50 (p = 4e-3). The same hits in plain grep order: 26.9 / 37.6 / 48.9 /
+63.6 (15 to 34 points worse, p < 1e-28). Whole session files, 1/2/3/5 files: 63.4 / 75.0 / 78.1 / 83.2 at
+1,095 to 5,116 tokens; 5 files equals Mem0 top-50 (n.s.), is behind the local-model `nsm` (p = 3e-3) and
+MemVault high-context (p = 3e-13). Multi-hop is where every markdown arm loses (56 to 57% vs 71.5% for
+local-model `nsm`). What this says about `nsm`: its no-model lexical stack is roughly a ranked grep with
+stemming, phrase and substring legs, worth about three points at 50; the on-device models are what
+separate it from plain files. Not measured: a model pass that rewrites notes into fact files.
+
 **The graph adds nothing, in three designs.** With spreading activation off (`nsm-lexical`) test accuracy
 is unchanged at every cutoff (80.8% vs 80.3% at 50, p = 0.66). Term nodes (one per distinctive word)
 with ACT-R fan damping (§3.3) made no difference at 50 seeds on dev (p ≥ 0.3), and with 20 lexical seeds
