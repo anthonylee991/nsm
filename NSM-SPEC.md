@@ -225,7 +225,10 @@ at 5/10/20 (n.s.) and 3.3 behind at 50 (p = 4e-3). The same hits in plain grep o
 MemVault high-context (p = 3e-13). Multi-hop is where every markdown arm loses (56 to 57% vs 71.5% for
 local-model `nsm`). What this says about `nsm`: its no-model lexical stack is roughly a ranked grep with
 stemming, phrase and substring legs, worth about three points at 50; the on-device models are what
-separate it from plain files. Not measured: a model pass that rewrites notes into fact files.
+separate it from plain files. A model pass that rewrites notes into typed fact files with aliases (the step
+reported for Instinct) was reconstructed and measured on 2026-10-16: 59.1 / 66.2 / 71.5 / 77.4 as ranked
+lines, equal to the raw notes (n.s.), 73.3 as five whole fact files (10 behind whole raw sessions, p = 4e-11);
+it helps multi-hop (names on every fact) and hurts temporal (rewritten dates). Extraction cost $0.10.
 
 **The graph adds nothing, in three designs.** With spreading activation off (`nsm-lexical`) test accuracy
 is unchanged at every cutoff (80.8% vs 80.3% at 50, p = 0.66). Term nodes (one per distinctive word)

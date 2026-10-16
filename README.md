@@ -120,6 +120,7 @@ typed in.
 | Markdown files + grep, hits ranked by query-word count | 61.1 | 68.6 | 74.2 | 78.5 | 0 ms |
 | Markdown files + grep, plain grep output order | 26.9 | 37.6 | 48.9 | 63.6 | 0 ms |
 | Markdown files + grep, whole session files (1 / 2 / 3 / 5 files) | 63.4 | 75.0 | 78.1 | 83.2 | 0 ms |
+| Markdown files + grep, notes rewritten into typed fact files by a model (lines) | 59.1 | 66.2 | 71.5 | 77.4 | 0 ms |
 | Mem0 cloud (776 of the questions) | | 75.3 | 81.1 | 85.6 | 468 ms |
 | MemVault production (hosted embeddings + reranker + graph) | | 87.3 | | 91.9 | 785 ms |
 
@@ -137,8 +138,11 @@ they contain is statistically equal to `nsm` with no model at 5, 10 and 20 memor
 points behind at 50 (p = 4e-3); the same hits in grep's own output order are 15 to 34 points worse
 (p < 1e-28). Reading the five best-matching whole files reaches 83.2% at 5,116 context tokens, equal to
 Mem0 cloud top-50 (n.s.) and 3.9 behind `nsm` with on-device models (p = 3e-3). Every markdown arm is
-behind every model-backed system on multi-hop questions (57% vs 72 to 80%). Instinct's reported extra
-step, a daily model pass that rewrites notes into typed fact files, was not measured.
+behind every model-backed system on multi-hop questions (57% vs 72 to 80%). The extra step reported for
+Instinct, a model pass that rewrites notes into typed fact files with alias keywords, was reconstructed and
+measured too: no better than the raw notes with ranked grep at any size (n.s.), and whole fact files are 10
+points behind whole raw sessions. Tidying the notes is not where the gain is; the second model that re-reads
+candidates is.
 
 **What it does not support.** Parity with current MemVault: 2.7 points behind its production default at
 equal tokens (p = 0.014), 4.8 behind its high-context mode (p = 1e-6), mostly on multi-hop and paraphrase
