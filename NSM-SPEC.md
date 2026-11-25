@@ -1,178 +1,137 @@
-# Neuro-Swarm Mesh (NSM)
-### A 100% Non-LLM, Biologically-Inspired Agent Memory Architecture
+# nsm
+### A local memory for AI agents: hybrid retrieval, a short-term / long-term lifecycle, PAE-shaped recall
 
-**Design specification**  
-*Version 1.0, October 2026. Anthony Lee.*
-
----
-
-## 1. Abstract & Motivation
-
-Conventional retrieval architectures for AI agents rely almost exclusively on high-dimensional vector embeddings, cosine distance lookups (Vector RAG), or secondary LLM judge rerankers (Graph RAG). In production applications, local edge environments, and real-time decision loops, these models face critical bottlenecks:
-
-1. **Inference Latency & Cold Starts**: Embedding models add 15–80ms of neural network compute per query. Secondary LLM extractors and rerankers inflate retrieval times into multiple seconds.
-2. **Loss of Lexical Precision & Hallucinatory Drift**: Dense embeddings frequently struggle with exact keywords, names, numbers, acronyms, and direct negation.
-3. **Cloud Dependency & Cost**: Continual embedding generation and vector database SaaS calls introduce non-trivial operating expenses and privacy leakages.
-4. **Passive Zombie Rows**: Traditional vector indices store static chunks that never strengthen with successful reuse or fade when obsolete.
-
-The **Neuro-Swarm Mesh (NSM)** is the opposite bet: **a non-LLM, zero-embedding memory architecture** that runs entirely in process (queries take about 1.5 ms at 200 nodes and 10 to 25 ms at about 1,700 nodes; §4). NSM combines:
-* **Durable Storage**: SQLite FTS5 with BM25 ranking, prefix tokenization, and Reciprocal Rank Fusion (RRF).
-* **RAM Graph Pointer Mesh**: Bidirectional in-memory adjacency lists hydrated on boot, so the graph walk never touches disk.
-* **Neurobiological Spreading Activation**: Energy radiation based on the Collins & Loftus semantic network model, weighted by epistemic source authority.
-* **Stigmergic Swarm Pheromones**: Ant Colony Optimization (ACO) reinforcing successful associative paths ($+\Delta \tau$) and exponentially evaporating unused synapses ($\tau(t) = \tau_0 e^{-\lambda \Delta t}$).
-* **Lateral Inhibition**: Sensory focus mechanisms that eliminate intra-category redundancy and resolve conflicting knowledge claims via directed supersession (`:SUPERSEDES`).
-* **Zero-LLM OpenIE Extraction**: ClausIE v2 rule-based grammatical clause deconstruction, SVO/SVC triple decomposition, and quantifier preservation, about 10 µs per sentence (`tests/benchmark.test.ts`).
+**Design specification**
+*Version 3.0, November 2026. Anthony Lee.*
 
 ---
 
-## 2. High-Level System Architecture
+## 1. What it is, and what changed in 3.0
+
+`nsm` is one SQLite file that every MCP-speaking agent on a machine reads and writes. It stores what the
+user said, finds the right memories for a task with no API calls, and hands them to the agent in labelled
+slots. With two small on-device models it matches Mem0's cloud product on LoCoMo (§4).
+
+Versions 1 and 2 were built as the Neuro-Swarm Mesh: a concept graph extracted from every memory by
+rule-based OpenIE (ClausIE), walked by spreading activation, sharpened by lateral inhibition, and tuned by
+ant-colony pheromone reinforcement and evaporation. That design assumed the swarm would do the retrieval.
+It does not: retrieval quality comes from the lexical and dense legs, the rank fusion, and above all a
+cross-encoder that re-reads the candidates. Every graph design was measured and none moved accuracy
+(§4: spreading activation off, p = 0.66; term nodes, fan damping, n.s.), while the graph made up about 80%
+of the stored rows and most of the per-query work. Version 3.0 removes it, with the integrations and
+extractors that only fed it, and keeps what the measurements support:
+
+1. **Hybrid retrieval**: BM25, phrase and substring legs, an optional dense leg, rank fusion, an optional
+   cross-encoder rerank over a deep pool (§3.2–3.3).
+2. **Short-term and long-term memory**: memories decay, are refreshed by being recalled, and fade from
+   short-term into long-term instead of being deleted (§3.4).
+3. **PAE-shaped recall**: pinned rules, anomaly flags and dated memories in fixed slots (§3.6).
+
+## 2. Architecture
 
 ```
-                               ┌────────────────────────────────────────────────────────┐
-                               │                    USER QUERY / TEXT                   │
-                               └───────────────────────────┬────────────────────────────┘
-                                                           │
-                            ┌──────────────────────────────┴──────────────────────────────┐
-                            ▼                                                             ▼
-              ┌───────────────────────────┐                                 ┌───────────────────────────┐
-              │   Zero-LLM OpenIE Core    │                                 │    Lexical Scout Engine   │
-              │  (ClausIE v2 + Hearst)    │                                 │   (SQLite FTS5 + BM25)    │
-              └─────────────┬─────────────┘                                 └─────────────┬─────────────┘
-                            │                                                             │
-                            ▼                                                             ▼
-              ┌───────────────────────────┐                                 ┌───────────────────────────┐
-              │  Relational Quad Tuples   │                                 │  Reciprocal Rank Fusion   │
-              │  (Subj, Rel, Obj, Attr)   │                                 │     (RRF Score: BM25+Sub) │
-              └─────────────┬─────────────┘                                 └─────────────┬─────────────┘
-                            │                                                             │
-                            └──────────────────────────────┬──────────────────────────────┘
-                                                           │
-                                                           ▼
-                                            ┌─────────────────────────────┐
-                                            │ Candidate Seed Nodes In RAM │
-                                            └──────────────┬──────────────┘
-                                                           │
-                                                           ▼
-                                            ┌─────────────────────────────┐
-                                            │ In-Memory Adjacency Graph   │
-                                            │ • Spreading Activation      │
-                                            │ • Epistemic Authority Scale │
-                                            └──────────────┬──────────────┘
-                                                           │
-                                                           ▼
-                                            ┌─────────────────────────────┐
-                                            │ Lateral Inhibition Core     │
-                                            │ • Directed Supersession     │
-                                            │ • Slot Conflict Suppression │
-                                            │ • Category Capacity Filter  │
-                                            └──────────────┬──────────────┘
-                                                           │
-                                                           ▼
-                                            ┌─────────────────────────────┐
-                                            │ Peripheral Attention Engine │
-                                            │ (PAE Slotting: <150 Tokens) │
-                                            └──────────────┬──────────────┘
-                                                           │
-                                                           ▼
-                                            ┌─────────────────────────────┐
-                                            │ Ant Colony Reinforcement    │
-                                            │ (Pheromone Update + Decay)  │
-                                            └─────────────────────────────┘
+ remember(text)                                   recall(query, k)
+   │                                                │
+   ▼                                                ▼
+ ┌──────────────────────────────┐        ┌──────────────────────────────────────────────┐
+ │ memories  (SQLite, WAL)      │◄───────┤ legs: BM25 · phrase · substring · [dense]    │
+ │  text, dates, episode,       │        │ fusion: reciprocal rank fusion, dense ×2     │
+ │  strength, state             │        │ [episode neighbours of the top 10]           │
+ │ memories_fts (FTS5, porter)  │        │ [cross-encoder rerank of the top 100]        │
+ │ vectors      (optional)      │        └───────────────────────┬──────────────────────┘
+ └──────────────────────────────┘                                ▼
+            ▲                            ┌──────────────────────────────────────────────┐
+            │  reinforce recalled,       │ lifecycle rank: 0.75 relevance + 0.25        │
+            └──spread to associates,─────┤ strength (a strong cue reactivates)          │
+               daily sweep               └───────────────────────┬──────────────────────┘
+                                                                 ▼
+                                         [PINNED RULES] [ANOMALY FLAGS] [MEMORIES]
 ```
 
----
+Code: `src/db.ts` (storage and legs), `src/retrieval.ts` (the pipeline), `src/app/store.ts` (the product:
+lifecycle, prompt), `src/lifecycle/` (pure functions), `src/neural/` (optional local models),
+`src/mcp/server.ts`, `bin/nsm.ts`.
 
-## 3. Subsystem Specifications
+## 3. Subsystems
 
-### 3.1 Durable Storage Layer (SQLite FTS5 & Hybrid RRF)
+### 3.1 Storage
 
-Durable persistence is maintained in a single-file SQLite database (or `:memory:` during ephemeral execution) using in-process bindings (`bun:sqlite` or `better-sqlite3`):
+One table, `memories`: id, text, pinned, source, created and occurred times, episode and ordinal, and the
+lifecycle columns (importance, strength as of a time, reinforcement count, last recall, state). An FTS5
+index over the text (`porter unicode61`, prefixes of 2 and 3) uses the table as external content, so the
+text is stored once. Vectors, when the local embedder is on, sit in `vectors` and are deleted with their
+memory. `meta` holds the time of the last sweep.
 
-1. **Entity Table (`nodes`)**: Stores durable node records containing identifier, categorical node type, label, source identifier, serialized JSON payload, epistemic authority weight, and timestamps.
-2. **Full-Text Search Index (`nodes_fts`)**: SQLite FTS5 virtual table indexing `label` and searchable content with prefix tokenization (`prefix='2,3'`).
-3. **Synaptic Synapse Table (`edges`)**: Relational edge table storing directed connections (`source_id`, `target_id`, `relation`, `weight`, `last_activated`).
-4. **Reciprocal Rank Fusion (RRF)**:
-   Scout searches combine BM25 rank with substring frequency:
-   $$\text{RRF}(d) = \sum_{m \in M} \frac{1}{k + r_m(d)}$$
-   where $k = 60$ and $r_m(d)$ is the 1-indexed rank under retrieval method $m$. Final scores are scaled by epistemic source authority:
-   $$\text{Score}(d) = \text{RRF}(d) \cdot \left(0.5 + 0.5 \cdot \alpha(d)\right)$$
+Several agents share the file, each through its own MCP server process: the database runs in WAL mode
+with a busy timeout, and each process drops its in-RAM caches (all memories, lowercased texts, vectors)
+when `PRAGMA data_version` shows another connection has committed.
 
-### 3.2 In-Memory Pointer Mesh (`AdjacencyGraph`)
+A 2.x database (`nodes`, `edges`, `nodes_fts`, ...) is migrated on first open: memories and pinned rules
+keep their ids, dates, strengths, states and vectors; concept nodes, edges, the audit log table and
+integration configs are dropped; a snapshot of the old file is kept as `memory.db.v2-backup`.
 
-On initialization, nodes and edges hydrate into RAM as bidirectional adjacency lists:
-* `outgoing: Map<string, GraphEdge[]>`
-* `incoming: Map<string, GraphEdge[]>`
+### 3.2 Retrieval legs and fusion
 
-Graph traversals execute through native memory pointers in **0.005–0.02 milliseconds**, bypassing disk I/O during real-time retrieval loops.
+* **BM25** over the query's content words, OR'd, each prefix-matched.
+* **Phrase**: each adjacent query word pair (unless both are stop words) as an FTS phrase.
+* **Substring**: memories containing query words anywhere (inside compounds, before stemming), ranked by
+  how many they contain. Removing it cost 4 points at 5 memories (§4.2).
+* **Dense** (with the embedder): brute-force cosine over unit vectors.
 
-### 3.3 Neurobiological Spreading Activation
+Fusion: $\text{RRF}(d) = \sum_m w_m / (60 + r_m(d))$ with $w = 2$ for the dense leg, 1 for the others,
+and the substring leg scaled by $1 + 0.75 \cdot \text{hits}$. Kept: 50 candidates, or 100 with a dense leg.
+Pinned rules are never ranked.
 
-Activation energy pulses outward from lexical seed hits across connected synapses according to the Collins & Loftus network model:
-$$A_j^{(h)} = \sum_{i \in \mathcal{N}(j)} A_i^{(h-1)} \cdot w_{ij} \cdot (1 - \delta)$$
-where:
-* $A_i^{(h-1)}$ is the activation energy of node $i$ at hop $h-1$.
-* $w_{ij} \in [0.0, 1.0]$ is the synaptic edge weight (pheromone level).
-* $\delta = 0.45$ is the decay rate per hop.
-* Propagation halts when energy drops below the minimum activation threshold ($\theta = 0.05$).
+### 3.3 Local models (optional)
 
-### 3.4 Epistemic Authority & Directed Supersession
+`bge-small-en-v1.5` (384-d) for the dense leg and `ms-marco-MiniLM-L-6-v2` as a cross-encoder, both
+through ONNX on the CPU (`@huggingface/transformers`, an optional dependency; injectable `Embedder` /
+`Reranker` interfaces). With them, the memories saved next to the top 10 hits (same episode, ordinal ±1)
+join the pool, and the cross-encoder orders the top 100. The reranker's pool was the largest single lever
+measured (§4).
 
-To eliminate knowledge conflicts without calling an LLM arbitrator, NSM establishes explicit epistemic authority tiers:
+### 3.4 Memory lifecycle: short-term, long-term, pinned
 
-| Source Identifier | Epistemic Authority ($\alpha$) | Description |
+From ACM, measured in MemVault and in NSM (§4.3):
+
+| State | What it is | How it behaves |
 | :--- | :--- | :--- |
-| `user_invariant` | 1.00 | Pinned rules, behavioral boundaries, non-negotiables |
-| `user_fact` | 1.00 | Direct first-party declarative statements from the user |
-| `cloud_mesh` | 0.95 | Verified synchronized second-brain memories (MemVault/Mem0) |
-| `calendar` | 0.90 | Structured calendar events and routine schedules |
-| `local_notes` | 0.85 | Local markdown documents (Obsidian/Logseq) |
-| `ambient_signal` | 0.75 | Localized environment, weather, and timezone baselines |
-| `public_scraper` | 0.60 | Inferred or scraped public profile signals |
-| `inferred` | 0.50 | Synthetically derived concept associations |
+| short-term (`active`) | every new memory | competes on any cue |
+| long-term (`archived`) | strength ≤ 0.02 and not recalled for 90 days | kept whole; hidden from `activeOnly` recall and lists; still reached by a direct question; back to short-term when recalled |
+| pinned | rules the user marked | delivered on every recall, never decays, never ranked |
 
-#### Directed Supersession (`:SUPERSEDES`)
-When a node with authority $\alpha \ge 0.90$ asserts an attribute (e.g. residence or location), NSM scans existing nodes for lower-authority claims ($\alpha < 0.90$) and automatically injects a directed `:SUPERSEDES` edge:
-$$(\text{Node}_{\text{verified}}) \xrightarrow{:SUPERSEDES} (\text{Node}_{\text{unverified}})$$
-During lateral inhibition, any node with an incoming `:SUPERSEDES` edge from an equal-or-higher authority entity is immediately suppressed.
+Strength $S(t) = S_0 e^{-t/\tau}$, $\tau = 30 (1 + 0.25 \min(B, 20))$ days ($B$ = times recalled: the
+savings effect). Recall adds $0.17 \ln 2$; a tenth of that spreads to the top recalled memories' vector
+neighbours (cosine ≥ 0.65), and seven hundredths to memories that happened within an hour of them. Final rank: $0.75 \cdot \text{relevance} + 0.25 \cdot S'$, where a
+cue of relevance ≥ 0.4 reactivates $S'$ to 1, so decay pushes stale noise down without hiding what is
+asked about directly. The sweep runs from `recall` once a day (CLI and MCP server) or on `nsm sweep`.
 
-### 3.5 Ant Colony Optimization (ACO) & Evaporation
+Long-term memories are not summarised or merged. Measured: deleting faded memories cost 16 points over
+180 simulated days while demoting them cost nothing (§4.3); in MemVault, model summaries that replaced
+originals cost 7 points, and rewriting notes into typed facts was no better than the raw notes and hurt
+dates (§4, markdown arms). The space a summary would save is small next to what 3.0 freed by removing the
+graph.
 
-Synaptic pathways behave like ant colony foraging trails:
-1. **Reinforcement**: When a pair of nodes are jointly retrieved and active, their mutual edge weight increases:
-   $$w_{ij} \leftarrow \min(1.0, w_{ij} + \Delta \tau) \quad (\Delta \tau = 0.15)$$
-2. **Exponential Evaporation**: Inactive synapses decay exponentially according to their half-life ($t_{1/2} = 14\text{ days}$):
-   $$\tau(t) = \tau(0) \cdot e^{-\lambda \Delta t}, \quad \lambda = \frac{\ln 2}{t_{1/2}}$$
+### 3.5 Absence flags
 
-Over time, frequently exercised cognitive connections become associative superhighways, while transient noise naturally fades.
+For each of the top 10 recalled memories, its family is the stored memories with word-overlap Jaccard ≥
+0.15 (up to 12). A family of ≥ 5 at regular intervals (CV < 1) whose last entry is ≥ 3 median intervals
+(and ≥ 4 days) old is flagged once: "nothing about this since <date> (<n> days); it usually comes up about
+every <m> days". No model.
 
-### 3.6 Zero-LLM Information Extraction (ClausIE v2)
+### 3.6 Recall slots (PAE)
 
-Unstructured text is parsed without neural models using rule-based Open Information Extraction:
-* **Verb-Gated Conjunction Segmentation**: Conjunctions (`and`, `but`) are split into separate proposition clauses only if followed by an active verb phrase or subject-verb clause. Noun lists (`"peanuts, shellfish, and tree nuts"`) and numeric lists (`"aged 28, 14, and 6"`) are preserved intact.
-* **SVO/SVC Decomposition**: Parses clauses into Subject, Verb Phrase, Direct Object, and Adverbial prepositions (`in`, `at`, `for`, `with`, `as`).
-* **Quantifier & Attribute Extraction**: Extracts numbers, ages, quantities, and entity categories (`person`, `organization`, `place`, `rule`).
-* Execution latency: **10–25 microseconds per sentence**.
+Peripheral Attention Engineering (github.com/anthonylee991/pae): a model answers better when the context
+it gets is sorted into labelled slots about the asker and their situation, with anomalies flagged, than
+when it gets a flat list. `nsm` returns:
 
-### 3.7 Peripheral Attention Engineering (PAE)
-
-The final retrieved context is slotted into a deterministic format. Its size follows the lateral inhibition cap: with the 2026-10-14 default of up to 10 memories per node type it is about 900–1,100 tokens on conversational memories (measured on LoCoMo turns: 3,500–4,400 characters); the earlier cap of 3 gave 150–250 tokens and 55.9% on the test split, which is why it was raised:
 ```
-[AMBIENT CONTEXT]
-Location: Metro Area
-Weather: 72°F Sunny
-
-[PINNED INVARIANTS]
-• [INVARIANT] Morning Deep Work: No meetings before 11 AM
-
-[SCHEDULE & HORIZON]
-• Engineering Sync (Monday 11:30 AM)
-
-[USER PROFILE & FACTS]
-• I live in City B: residence
-
-[ACTIVATED MEMORY]
-• Strategy Roadmap: Q4 deliverables and milestone tracking
+[PINNED RULES]      the user's standing rules (always)
+[ANOMALY FLAGS]     routines that went quiet (when any)
+[MEMORIES]          • (date it happened) text  [id: ...]   best first
 ```
+
+The agent harness supplies the asker and the task; `nsm` supplies the user's side.
 
 ---
 
@@ -180,17 +139,10 @@ Weather: 72°F Sunny
 
 Every figure below comes from code in this repo or from MemVault's benchmark harness
 (`skillvault/apps/server/bench`), run on a developer workstation (Bun 1.4, Windows). Nothing is typed in.
+§4–4.3 were measured on 2.x, which still carried the graph; §4.5 checks that 3.0 retrieves the same
+evidence.
 
-**Unit microbenchmark** (`tests/benchmark.test.ts`, 200 nodes, 300 edges, 50 iterations):
-
-| Metric | Measured |
-| :--- | :--- |
-| Mean query latency | 1.5 ms |
-| Min / max query latency | 1.2 ms / 4.9 ms |
-| Clause extraction | 9 µs per sentence |
-| Test suite | 15 tests, under 200 ms |
-
-**One LoCoMo conversation through the harness** (system `nsm`, conv-30, no model calls): 369 turns
+**One LoCoMo conversation through the 2.x harness** (system `nsm`, conv-30, no model calls): 369 turns
 ingested in 1.2 s into 1,735 nodes (1,366 of them concept nodes) and 1,786 edges; 10 to 25 ms per
 query at that size. Latency grows with the store because `query` scans every node for scope detection
 and substring matching, and `ingestText` scans every node for conflict resolution on each insert.
@@ -248,7 +200,7 @@ top 3 hits after them (−4 / −5 points at 5 / 10 items, p < 0.001); the bge-b
 
 ### 4.3 Lifecycle and absence (measured 2026-10-14)
 
-The product layer (`src/app/store.ts`) carries ACM's lifecycle as pure functions (`src/lifecycle`):
+The product layer (`src/app/store.ts`) carries ACM's lifecycle as pure functions (`src/lifecycle`), as in §3.4:
 strength `S(t) = S0 · exp(−t/τ)` with `τ = 30 · (1 + 0.25 · min(boosts, 20))` days, reinforcement on
 recall `S += 0.17 · ln(1 + n)`, spreading of a tenth of that to same-hour memories (or vector neighbours
 at cosine ≥ 0.65), rank score `0.75 · relevance + 0.25 · S'` where a cue with relevance ≥ 0.4 reactivates
@@ -270,34 +222,58 @@ Not in NSM: surprisal flags for an entry that breaks its routine's pattern, whic
 Cosine families from the local embedder flagged fewer stopped routines than word overlap at every floor
 (best 50% vs 65% on dev) and are off by default.
 
-### 4.4 Defaults (2026-10-14)
+### 4.4 Defaults (3.0)
 
-`MeshConfig.storage`: `tokenizer: "porter"`, `phraseLeg: true`, `substringLeg: true`, `prefixMatch: true`,
-`labelWeight: 1`. `MeshConfig.graph`: `clausie: true` (nodes exist for PAE and supersession),
-`searchableConcepts: false`, `terms: false`. `query()`: 50 lexical seeds, up to 10 memories per node type
-after lateral inhibition, 2 hops, no fan damping, no episode expansion. With `neural.embedder` set:
-100 fused seeds with the dense leg at weight 2, up to 100 memories kept, the neighbours (radius 1) of the
-top 10 hits added when memories carry `episodeId` / `ordinal`; with `neural.reranker` set: the top 100
-memories reranked. The product layer assigns every memory an episode (the hour it occurred in) so the
-neighbour expansion applies to personal memories too. All other options remain available and off.
+Without models: BM25 (Porter, prefix) + phrase + substring legs, RRF k = 60, 50 candidates; the store ranks
+a pool of max(3k, 20) by the lifecycle score and returns k (default 10). With models: the dense leg at
+weight 2 over as many hits as candidates (100), the episode neighbours (radius 1) of the top 10 hits, the
+cross-encoder over the top 100. These are the 2026-10-14 configurations confirmed on test, with one
+correction: 2.x's store fused only 16 dense hits (a fallback meant for an unset option), not the 100 the
+benchmark measured; 3.0 uses 100 in the product too.
 
-### 4.1 Known limits of the current implementation
+### 4.5 3.0 against 2.1: same evidence, less work
 
-* Directed supersession (§3.4) is implemented only for residence / location claims whose
-  lower-authority source name contains `social`, `scraper` or `feed`. Other attribute conflicts are
-  not detected.
-* Edge weights are capped at 1.0 by `reinforceEdge`; reinforcement can only restore evaporated weight,
-  not grow a trail beyond its initial strength.
-* Lateral inhibition caps each node type at 3 by default, so a store where every memory is a `fact`
-  returns at most 3 memories unless `lateralInhibitionMaxPerCategory` is raised.
-* The `ingestText` default authority is 1.0 for every memory, so the authority weighting in §3.1 and
-  §3.3 has no effect on text ingested that way.
+Measured 2026-11-25 without answer-model or judge calls: each LoCoMo test conversation ingested as the
+harness does, the top 50 retrieved per question (885 questions), and the rank of every evidence turn
+recorded, for 2.1 (commit 6352ec4) and 3.0. "All evidence" = every evidence turn of the question within
+the cutoff; paired exact McNemar.
+
+| All evidence within k | @5 | @10 | @20 | @50 |
+| :--- | :---: | :---: | :---: | :---: |
+| No model, 2.1 | 46.7 | 54.0 | 60.5 | 67.3 |
+| No model, 3.0 | 47.2 | 53.9 | 60.9 | 67.8 |
+| On-device models, 2.1 | 63.2 | 69.8 | 73.4 | 78.5 |
+| On-device models, 3.0 | 63.5 | 70.4 | 73.8 | 79.7 |
+
+No difference is significant (no model p ≥ 0.23; models p ≥ 0.11, 21 questions gained and 11 lost at
+50). The answer-model scores of §4 therefore carry over; they were not re-run.
+
+Cost, through `MemoryStore` (no model, reinforcement and absence flags on), after remembering all 5,882
+LoCoMo turns, 200 recalls:
+
+| | 2.1 | 3.0 |
+| :--- | :---: | :---: |
+| remember, per memory | 92.5 ms | 0.9 ms |
+| recall p50 / p95 | 1,393 / 2,104 ms | 30 / 55 ms |
+| database file | 23.2 MB | 3.2 MB |
+| recall with models, p50 (one conversation, 152 questions) | 1,629 ms | 1,333 ms |
+
+Where 2.1's time went: every write re-parsed every stored row (the dedupe check and the episode ordinal
+scanned a cache the write had just dropped), and every recall tokenised every memory again for the
+absence-flag families. 3.0 answers those from SQL and keeps word sets and a word index between recalls;
+the flags are identical (200 of 200 recalls checked against the reference implementation).
 
 ---
 
-## 5. Summary
+## 5. Removed in 3.0
 
-NSM tests whether an agent memory with no model calls at all is good enough to be useful. The
-mechanism (BM25 and substring fusion, a concept graph walked by spreading activation, inhibition,
-reinforcement and evaporation) is implemented and unit-tested; its speed on small stores is measured;
-its accuracy against a real benchmark is the open question, and the harness to answer it is wired up.
+| Removed | Why |
+| :--- | :--- |
+| Concept graph: ClausIE / SVO-Hearst extraction, concept and term nodes, edges, spreading activation, fan damping | No effect on accuracy in three designs (§4); 80% of stored rows; extraction on every write and a walk on every read |
+| Ant-colony reinforcement and pheromone evaporation | A no-op in practice: each query reinforced the edge between its top two results, and edges only ever ran from a memory to a concept, never between two memories; evaporation was never called by the product |
+| Lateral inhibition | Its per-type cap was a top-N cut; its supersession only fired for `social` / `scraper` / `feed` sources that only the integrations wrote |
+| Directed supersession and epistemic authority | Every memory is first-party at authority 1.0, so the weighting was a no-op (2.x §4.1); "what is true now" is better served by dates on every memory and the newest dated statement winning (MemVault's LongMemEval result) |
+| Focus hysteresis, scope and visibility gates | Never set by the store, CLI or MCP server; scanned every memory on every query |
+| Integrations (markdown vault, calendar feed, social signal, remote API) | Not wired to any surface; opened a second connection to the database on every start; would have kept a bearer token in plain text |
+| `[AMBIENT CONTEXT]` / `[SCHEDULE]` / `[USER PROFILE]` slot formatter in the graph | The store never used it; `formatPrompt` is the one prompt |
+| Audit-log table | Written by nothing |

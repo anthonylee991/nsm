@@ -4,7 +4,7 @@ import type { Embedder, Reranker } from "./types.js";
 
 /**
  * Local models through @huggingface/transformers (ONNX, CPU). The package is an optional
- * dependency and is imported only when one of these classes is constructed, so a mesh without
+ * dependency and is imported only when one of these classes is constructed, so a store without
  * neural components never loads it.
  *
  * Models are downloaded once into `modelDir` (default `$NSM_MODEL_DIR` or ~/.nsm/models).

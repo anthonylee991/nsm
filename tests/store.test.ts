@@ -70,11 +70,27 @@ describe("MemoryStore", () => {
     await store.remember("second thing this morning", { createdAt: t0 + 10 * 60_000 });
     await store.remember("something in the afternoon", { createdAt: t0 + 5 * 3_600_000 });
     const nodes = store.list().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    const raw = (id: string) => (store as any).mesh.getStorage().getNodeById(id).payload;
-    expect(raw(nodes[0]!.id).episodeId).toBe(raw(nodes[1]!.id).episodeId);
+    const raw = (id: string) => (store as any).db.get(id);
+    expect(raw(nodes[0]!.id).episode).toBe(raw(nodes[1]!.id).episode);
     expect(raw(nodes[0]!.id).ordinal).toBe(0);
     expect(raw(nodes[1]!.id).ordinal).toBe(1);
-    expect(raw(nodes[2]!.id).episodeId).not.toBe(raw(nodes[0]!.id).episodeId);
+    expect(raw(nodes[2]!.id).episode).not.toBe(raw(nodes[0]!.id).episode);
+  });
+
+  it("with autoSweep, recall moves faded idle memories to long-term once a day", async () => {
+    const clock = { t: Date.UTC(2026, 0, 1) };
+    const auto = new MemoryStore({ config: { ...DEFAULT_CONFIG }, neural: false, now: () => clock.t, autoSweep: true, dbPath: join(home, "auto.db") });
+    try {
+      await auto.remember("Gina launched an ad campaign for her clothing store");
+      await auto.recall("anything"); // first recall sweeps (nothing faded yet) and records the time
+      expect(auto.stats().archived).toBe(0);
+      clock.t += 200 * 86_400_000;
+      await auto.recall("unrelated question", 5, { activeOnly: true });
+      expect(auto.stats().archived).toBe(1);
+      expect(auto.sweepIfDue()).toBeNull(); // already swept today
+    } finally {
+      await auto.close();
+    }
   });
 
   it("persists across reopen in the same home", async () => {

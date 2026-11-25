@@ -36,17 +36,37 @@ export interface AbsenceFlag {
 /** Similarity between two memories, 0..1. The store supplies cosine when vectors exist, else lexical. */
 export type Similarity = (a: DatedMemory, b: DatedMemory) => number;
 
-const STOP = new Set(["the", "and", "for", "with", "that", "this", "was", "were", "have", "has", "had", "from", "about", "just", "today", "this", "morning", "evening", "night", "yesterday", "week", "again"]);
+const STOP = new Set(["the", "and", "for", "with", "that", "this", "was", "were", "have", "has", "had", "from", "about", "just", "today", "morning", "evening", "night", "yesterday", "week", "again"]);
 
-/** Jaccard over content words of three or more letters; the no-model fallback for family selection. */
-export function lexicalSimilarity(a: DatedMemory, b: DatedMemory): number {
-  const words = (t: string) => new Set(t.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w)));
-  const A = words(a.text);
-  const B = words(b.text);
+/** Content words of three or more letters, stop words dropped. */
+export function wordSet(text: string): Set<string> {
+  return new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w)));
+}
+
+function jaccard(A: Set<string>, B: Set<string>): number {
   if (A.size === 0 || B.size === 0) return 0;
   let inter = 0;
   for (const w of A) if (B.has(w)) inter++;
   return inter / (A.size + B.size - inter);
+}
+
+/** Jaccard over content words of three or more letters; the no-model similarity for family selection. */
+export function lexicalSimilarity(a: DatedMemory, b: DatedMemory): number {
+  return jaccard(wordSet(a.text), wordSet(b.text));
+}
+
+/**
+ * `lexicalSimilarity` with each memory's word set built once and kept in `sets` (by id; a memory's text
+ * never changes). Family selection compares every recalled memory with every stored one, so a cache that
+ * outlives one recall saves tokenising the whole store on every recall.
+ */
+export function cachedLexicalSimilarity(sets: Map<string, Set<string>> = new Map()): Similarity {
+  const of = (m: DatedMemory) => {
+    let s = sets.get(m.id);
+    if (!s) sets.set(m.id, (s = wordSet(m.text)));
+    return s;
+  };
+  return (a, b) => jaccard(of(a), of(b));
 }
 
 /**

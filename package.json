@@ -1,7 +1,7 @@
 {
   "name": "@skillvault/nsm",
-  "version": "2.1.0",
-  "description": "Neuro-Swarm Mesh (NSM): a zero-LLM, zero-embedding agent memory: SQLite FTS5 BM25 storage, in-memory graph spreading activation, pheromone evaporation and rule-based OpenIE extraction.",
+  "version": "3.0.0",
+  "description": "nsm: a local memory for AI agents. SQLite FTS5 hybrid retrieval with optional on-device embedding and reranking, short-term memories that decay into long-term, pinned rules and absence flags. No API calls.",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
@@ -13,12 +13,12 @@
   },
   "keywords": [
     "memory",
-    "zero-llm",
-    "spreading-activation",
-    "stigmergy",
+    "agent-memory",
+    "mcp",
     "sqlite-fts5",
     "bm25",
-    "openie",
+    "hybrid-retrieval",
+    "reranker",
     "local-first"
   ],
   "author": "Anthony Lee",

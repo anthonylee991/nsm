@@ -6,9 +6,10 @@
  *   nsm remember "<text>" [--pin]     store a memory (or a pinned rule)
  *   nsm recall "<query>" [--k N] [--json]
  *   nsm forget <id>
- *   nsm list [--pinned] [--limit N]
- *   nsm models install | status       download the local models and switch recall to use them
+ *   nsm list [--pinned] [--archived] [--limit N]
+ *   nsm models install | status | off download the local models and switch recall to use them
  *   nsm setup <harness>               print the one line that wires nsm into claude-code | cursor | codex | generic
+ *   nsm sweep                         move faded, idle memories to long-term now (recall does it daily)
  *   nsm stats | doctor | --version
  */
 import { existsSync } from "node:fs";
@@ -34,7 +35,7 @@ const out = (s: string) => process.stdout.write(s + "\n");
 async function main() {
   switch (command) {
     case "serve": {
-      const store = new MemoryStore();
+      const store = new MemoryStore({ autoSweep: true });
       log(`[nsm] serving MCP on stdio (db ${dbPath()}, local models ${store.neural ? "on" : "off"})`);
       await serve(store);
       await store.close();
@@ -52,7 +53,7 @@ async function main() {
     case "recall": {
       const query = positional.join(" ").trim();
       if (!query) throw new Error('usage: nsm recall "<query>" [--k=N] [--json]');
-      const store = new MemoryStore();
+      const store = new MemoryStore({ autoSweep: true });
       const r = await store.recall(query, typeof flags.k === "string" ? Number(flags.k) : undefined, { activeOnly: flags["active-only"] === true });
       out(flags.json ? JSON.stringify(r, null, 2) : r.prompt);
       log(`[nsm] ${r.memories.length} memories, ${r.pinned.length} pinned, ${r.flags.length} flags, ${r.latencyMs.toFixed(0)} ms${r.neural ? ", local models" : ""}`);
@@ -136,11 +137,11 @@ async function main() {
       checks.push(`home     ${nsmHome()}`);
       checks.push(`db       ${dbPath()} ${existsSync(dbPath()) ? "(exists)" : "(will be created)"}`);
       checks.push(`models   ${cfg.neural ? "on" : "off"} (${modelDir()})`);
-      const store = new MemoryStore({ neural: false });
+      const store = new MemoryStore({ neural: false, reinforce: false });
       const s = store.stats();
       checks.push(`memories ${s.memories} (+${s.pinned} pinned, ${s.vectors} vectors)`);
       const t0 = performance.now();
-      store.recall("doctor check");
+      await store.recall("doctor check");
       checks.push(`recall   ok, ${(performance.now() - t0).toFixed(1)} ms lexical`);
       await store.close();
       out(checks.join("\n"));
@@ -157,8 +158,8 @@ async function main() {
         `  nsm recall "<query>" [--k=N]       what do I know about ...\n` +
         `  nsm forget <id>\n` +
         `  nsm list [--pinned] [--archived] [--limit=N]\n` +
-        `  nsm sweep                          apply forgetting: faded, idle memories are archived (not deleted)\n` +
-        `  nsm models install | status | off  on-device models (better recall, ~700 ms instead of ~6 ms)\n` +
+        `  nsm sweep                          move faded, idle memories to long-term (archived, not deleted); recall does this daily\n` +
+        `  nsm models install | status | off  on-device models (better recall, ~1.3 s instead of ~6 ms)\n` +
         `  nsm setup claude-code|cursor|codex|generic\n` +
         `  nsm stats | doctor | --version\n\n` +
         `Data: ${resolve(nsmHome())}`);

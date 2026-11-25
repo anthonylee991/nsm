@@ -76,31 +76,38 @@ machine). Override the location with `NSM_HOME`.
 
 ## What is inside
 
-* **Storage**: SQLite with an FTS5 index (Porter-stemmed BM25), a phrase leg and a substring leg
-  fused by reciprocal rank fusion. Visibility filtering happens inside every leg.
+* **Storage**: one SQLite file. Memories in a plain table, an FTS5 index over their text (Porter-stemmed
+  BM25), optional vectors. Several agents can use it at once (WAL mode; each server sees the others' writes).
+* **Retrieval**: BM25, phrase and substring legs fused by reciprocal rank fusion; with the on-device models,
+  a dense leg at double weight and a cross-encoder that re-reads the top 100 candidates plus the memories
+  saved around the top hits.
 * **Pinned rules**: memories marked `--pin` are delivered on every recall, matched or not.
-* **A lifecycle, from ACM**: every memory has a strength that decays over about 90 days and is
-  reinforced when recalled (and a little when its neighbours are). `nsm sweep` archives memories that
-  have faded and gone unrecalled for 90 days; they stop competing on weak cues but a direct question
-  still reaches them and brings them back. Nothing is deleted unless you ask.
+* **Short-term and long-term memory, from ACM**: every memory has a strength that decays over about 90
+  days and is refreshed when it is recalled (and a little when its neighbours are). Once a day, memories
+  that have faded and gone unrecalled for 90 days move to long-term: kept whole, out of the way of weak
+  cues, still found by a direct question, and back in short-term once recalled. Nothing is deleted unless
+  you ask.
 * **Absence flags**: when a routine you kept mentioning on a regular rhythm has gone quiet, recall says
   so in an `[ANOMALY FLAGS]` slot above the memories, with no model involved.
-* **Optional local models**: `bge-small-en-v1.5` for a dense leg (384-d, fused into the seeds at double
-  weight) and `ms-marco-MiniLM-L-6-v2` as a cross-encoder over the top 100 candidates plus the memories
-  saved around the top hits. Both run through ONNX via `@huggingface/transformers`, an optional
-  dependency. `rerankCandidates: 50` halves recall latency at the accuracy of the previous release.
-* **A graph you can turn on**: concept and term nodes, spreading activation with ACT-R fan damping,
-  reinforcement and evaporation. It is off by default because, in three designs, it did not improve
-  retrieval (below).
-* **Library API** for your own programs: `NeuroSwarmMesh` (`src/mesh.ts`), with injectable
-  `Embedder` / `Reranker` interfaces so you can bring other models.
+* **PAE-shaped output**: pinned rules, anomaly flags and dated memories in labelled slots, the structure
+  [Peripheral Attention Engineering](https://github.com/anthonylee991/pae) measured to help models use
+  context.
+* **Optional local models**: `bge-small-en-v1.5` (384-d) and `ms-marco-MiniLM-L-6-v2`, through ONNX via
+  `@huggingface/transformers`, an optional dependency.
+* **Library API** for your own programs: `MemoryStore` (the product: lifecycle and prompt) and `Retriever`
+  (retrieval only), with injectable `Embedder` / `Reranker` interfaces so you can bring other models.
 
 ```typescript
-import { NeuroSwarmMesh } from "@skillvault/nsm";
-const mesh = new NeuroSwarmMesh({ dbPath: "mesh.db" });
-mesh.ingestText("I live in Seattle and work remotely");
-console.log(mesh.query("where do I live?").paePrompt);
+import { MemoryStore } from "@skillvault/nsm";
+const store = new MemoryStore({ dbPath: "memory.db" });
+await store.remember("I live in Seattle and work remotely");
+console.log((await store.recall("where do I live?")).prompt);
 ```
+
+Versions before 3.0 also built a concept graph from every memory (rule-based clause extraction, spreading
+activation, ant-colony pheromone trails). It was measured in three designs and never helped retrieval,
+while making up most of the stored rows, so 3.0 removed it. A 2.x database is migrated on first open and
+the old file is kept as `memory.db.v2-backup`.
 
 ## Measured
 
@@ -123,6 +130,11 @@ typed in.
 | Markdown files + grep, notes rewritten into typed fact files by a model (lines) | 59.1 | 66.2 | 71.5 | 77.4 | 0 ms |
 | Mem0 cloud (776 of the questions) | | 75.3 | 81.1 | 85.6 | 468 ms |
 | MemVault production (hosted embeddings + reranker + graph) | | 87.3 | | 91.9 | 785 ms |
+
+Those rows were measured on 2.1. Version 3.0 removed the graph and was checked against 2.1 on the same
+split without the answer model: the same evidence reaches the top 5 to 50 at every cutoff, with and
+without models (no difference significant; NSM-SPEC §4.5), while `remember` went from 92 ms to 0.9 ms
+and no-model recall from 1.4 s to 30 ms at 5,900 memories.
 
 **What this supports.** With the on-device models, `nsm` scores 86.9% against Mem0 cloud's top-50
 85.6% on the questions both answered (p = 0.32, not a significant difference) and beats plain embedding
@@ -148,7 +160,7 @@ candidates is.
 equal tokens (p = 0.014), 4.8 behind its high-context mode (p = 1e-6), mostly on multi-hop and paraphrase
 questions; Mem0 at its 200-memory, 6,771-token setting is also ahead (89.9%, p = 0.006). Any
 contribution from the graph: clause-extractor concepts, term nodes and fan damping were each measured and
-none helped. Fast and accurate in one setting: 6 ms gets you the first row, 1.3 s the second.
+none helped (3.0 removed it). Fast and accurate in one setting: 6 ms gets you the first row, 1.3 s the second.
 
 **Lifecycle, 180 simulated days** (LoCoMo dev, half the questions asked along the way, daily sweep):
 never-asked questions are answered at 63.8% on a fresh store, 63.8% with forgetting by demotion (identical
@@ -167,7 +179,7 @@ the design is in [NSM-SPEC.md](NSM-SPEC.md).
 
 ```bash
 bun install
-bun test                 # 49 tests; the model tests use fakes, no download
+bun test                 # the model tests use fakes, no download
 bun run cli -- doctor
 ```
 

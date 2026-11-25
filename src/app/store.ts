@@ -1,5 +1,5 @@
-import { NeuroSwarmMesh } from "../mesh.js";
-import type { MemoryNode, ScoredMemoryNode } from "../core/types.js";
+import { Retriever } from "../retrieval.js";
+import type { MemoryRecord } from "../db.js";
 import type { NeuralConfig } from "../neural/types.js";
 import { LocalEmbedder, LocalReranker } from "../neural/local.js";
 import { dbPath, loadConfig, modelDir, type NsmConfig } from "./paths.js";
@@ -13,13 +13,12 @@ import {
   boostOnAccess,
   decayedStrength,
   forgettingAction,
-  initialStrength,
   rankScore,
   spreadBoost,
   type ForgettingParams,
   type Importance,
 } from "../lifecycle/strength.js";
-import { absenceFlags, lexicalSimilarity, type AbsenceFlag, type DatedMemory } from "../lifecycle/absence.js";
+import { ABSENCE_SEEDS, absenceFlags, cachedLexicalSimilarity, wordSet, type AbsenceFlag, type DatedMemory, type Similarity } from "../lifecycle/absence.js";
 
 export interface Memory {
   id: string;
@@ -60,34 +59,52 @@ export interface StoreOptions {
   /** Spread a smaller reinforcement to each recalled memory's associates (default true). */
   spread?: boolean;
   /**
+   * Run the forgetting sweep from `recall` once a day (default false; the CLI and MCP server turn it on), so
+   * faded short-term memories move to long-term without anyone running `nsm sweep`.
+   */
+  autoSweep?: boolean;
+  /**
    * Family similarity floors for absence flags: lexical Jaccard (default 0.15, chosen on the dev split
    * of the absence test and confirmed on test) or cosine when the store has vectors (default 0.6).
    */
   absenceSimilarity?: { cosine?: number; lexical?: number };
   /**
    * How absence-flag families are found. "lexical" (default) uses word overlap; "cosine" uses stored
-   * vectors when every recalled memory has one. Measured on the absence test: lexical flagged 65% of
-   * stopped routines with no false flags on dev; cosine from the small local embedder did worse at
-   * every floor.
+   * vectors when every recalled memory has one (measured worse at every floor; off by default).
    */
   absenceFamilies?: "lexical" | "cosine";
 }
 
+const DAY = 86_400_000;
+const HOUR = 3_600_000;
+
 /**
- * The product surface over NeuroSwarmMesh: one SQLite file under ~/.nsm, optional local models, the
- * ACM lifecycle (strength, reinforcement, forgetting by demotion, absence flags) and three verbs
- * (remember, recall, forget). Used by the CLI and the MCP server.
+ * The product: one SQLite file under ~/.nsm, optional local models, and the memory lifecycle.
+ *
+ *   short-term  `active` memories: full text, every leg, strength decaying over ~90 days, refreshed when recalled
+ *   long-term   `archived` memories: faded and unrecalled for 90 days; kept whole (measured: deleting or
+ *               summarising them costs accuracy), out of `activeOnly` recall and lists, still reached by a
+ *               direct cue, and moved back to short-term when recalled
+ *   pinned      rules delivered on every recall, never decaying
+ *
+ * Verbs: remember, recall, forget, list, sweep. Used by the CLI and the MCP server.
  */
 export class MemoryStore {
   readonly config: NsmConfig;
   readonly neural: boolean;
-  private readonly mesh: NeuroSwarmMesh;
+  private readonly retriever: Retriever;
   private readonly now: () => number;
   private readonly forgetting: ForgettingParams;
   private readonly reinforce: boolean;
   private readonly spread: boolean;
+  private readonly autoSweep: boolean;
   private readonly absenceSimilarity: { cosine: number; lexical: number };
   private readonly absenceFamilies: "lexical" | "cosine";
+  /** Word sets for absence-flag families, by memory id (text never changes, so they never go stale). */
+  private readonly wordSets = new Map<string, Set<string>>();
+  /** word -> ids of memories containing it, for the same families (stale ids are filtered on use). */
+  private readonly postings = new Map<string, Set<string>>();
+  private readonly indexed = new Set<string>();
 
   constructor(options: StoreOptions = {}) {
     this.config = options.config ?? loadConfig();
@@ -96,6 +113,7 @@ export class MemoryStore {
     this.forgetting = options.forgetting ?? DEFAULT_FORGETTING;
     this.reinforce = options.reinforce ?? true;
     this.spread = options.spread ?? true;
+    this.autoSweep = options.autoSweep ?? false;
     this.absenceSimilarity = { cosine: options.absenceSimilarity?.cosine ?? 0.6, lexical: options.absenceSimilarity?.lexical ?? 0.15 };
     this.absenceFamilies = options.absenceFamilies ?? "lexical";
     const neural: NeuralConfig = {};
@@ -103,48 +121,30 @@ export class MemoryStore {
       const dir = modelDir();
       neural.embedder = new LocalEmbedder(this.config.embedModel, { modelDir: dir });
       neural.reranker = new LocalReranker(this.config.rerankModel, { modelDir: dir });
-      // denseWeight and rerankCandidates: library defaults (2, 100), the configuration confirmed on test.
     }
-    this.mesh = new NeuroSwarmMesh({ dbPath: options.dbPath ?? dbPath(), neural });
+    this.retriever = new Retriever({ dbPath: options.dbPath ?? dbPath(), neural });
   }
 
-  // ---- node helpers ----
-
-  private isMemory(n: MemoryNode): boolean {
-    return n.nodeType === "fact" || n.nodeType === "invariant";
-  }
-
-  private importance(n: MemoryNode): Importance {
-    return n.nodeType === "invariant" ? "pinned" : ((n.payload?.importance as Importance) ?? "default");
+  private get db() {
+    return this.retriever.db;
   }
 
   /** Current strength: the stored value decayed to now. */
-  private strengthOf(n: MemoryNode, now: number): number {
-    const p = n.payload ?? {};
-    const base = typeof p.strength === "number" ? p.strength : initialStrength(this.importance(n));
-    const since = typeof p.strengthAt === "number" ? p.strengthAt : n.createdAt;
-    return decayedStrength(base, now - since, p.boostCount ?? 0, this.importance(n));
+  private strengthOf(m: MemoryRecord, now: number): number {
+    return decayedStrength(m.strength, now - m.strengthAt, m.boosts, m.importance);
   }
 
-  private occurredAtOf(n: MemoryNode): number {
-    return typeof n.payload?.occurredAt === "number" ? n.payload.occurredAt : n.createdAt;
-  }
-
-  private toMemory(n: MemoryNode, now: number = this.now()): Memory {
+  private toMemory(m: MemoryRecord, now: number = this.now()): Memory {
     return {
-      id: n.id,
-      text: String(n.payload?.text ?? n.payload?.rule ?? n.label),
-      pinned: n.nodeType === "invariant",
-      source: n.source,
-      createdAt: new Date(n.createdAt).toISOString(),
-      occurredAt: new Date(this.occurredAtOf(n)).toISOString(),
-      strength: this.strengthOf(n, now),
-      state: n.payload?.state === "archived" ? "archived" : "active",
+      id: m.id,
+      text: m.text,
+      pinned: m.pinned,
+      source: m.source,
+      createdAt: new Date(m.createdAt).toISOString(),
+      occurredAt: new Date(m.occurredAt).toISOString(),
+      strength: this.strengthOf(m, now),
+      state: m.state,
     };
-  }
-
-  private memories(): MemoryNode[] {
-    return this.mesh.getStorage().getAllNodes().filter((n) => this.isMemory(n));
   }
 
   // ---- verbs ----
@@ -167,90 +167,57 @@ export class MemoryStore {
     const clean = text.trim();
     if (!clean) throw new Error("empty memory");
     if (!options.allowDuplicate) {
-      const existing = this.memories().find((n) => String(n.payload?.text ?? "") === clean);
+      const existing = this.db.findByText(clean);
       if (existing) return { id: existing.id, duplicate: true };
     }
-
     const pinned = options.pinned === true;
-    const importance: Importance = pinned ? "pinned" : (options.importance ?? "default");
     const createdAt = options.createdAt ?? this.now();
     const occurredAt = options.occurredAt ?? createdAt;
-    // Episode = the hour the memory belongs to; ordinal = its place in that hour. Lets recall expand a hit to
-    // the memories saved around it (with the local models, where the reranker judges them).
-    const episodeId = Math.floor(occurredAt / 3_600_000);
-    const ordinal = this.memories().filter((n) => n.payload?.episodeId === episodeId).length;
-    const { nodeId } = this.mesh.ingestText(clean, {
+    // Episode = the hour the memory belongs to; ordinal = its place in that hour. Lets recall add the
+    // memories saved around a hit to the reranker's pool.
+    const episode = Math.floor(occurredAt / HOUR);
+    const memory = this.retriever.add(clean, {
+      id: options.id,
+      pinned,
       source: options.source ?? (pinned ? "user_invariant" : "user_fact"),
-      nodeType: pinned ? "invariant" : "fact",
-      authority: 1.0,
+      importance: options.importance,
       createdAt,
-      customId: options.id,
-      payload: {
-        ...(pinned ? { rule: clean } : {}),
-        importance,
-        strength: initialStrength(importance),
-        strengthAt: createdAt,
-        boostCount: 0,
-        state: "active",
-        occurredAt,
-        episodeId,
-        ordinal,
-      },
+      occurredAt,
+      episode,
+      ordinal: this.db.episodeSize(episode),
     });
-    if (this.neural) await this.mesh.embedPending();
-    return { id: nodeId, duplicate: false };
+    if (this.neural) await this.retriever.embedPending();
+    return { id: memory.id, duplicate: false };
   }
 
   /**
-   * Archived (demoted) memories are still candidates: their strength is at the floor, so they lose to
-   * active memories on weak cues, but a direct question reactivates them (cued reactivation in the rank
-   * score), and being recalled makes them active again. `activeOnly` hides them instead.
+   * Pinned rules, then the k best memories. Candidates come from retrieval; strength then decides among
+   * them (a strong cue reactivates a faded memory, so long-term memories still answer direct questions).
+   * `activeOnly` leaves long-term (archived) memories out.
    */
   async recall(query: string, k?: number, options: { activeOnly?: boolean; flags?: boolean } = {}): Promise<RecallResult> {
     const start = performance.now();
+    if (this.autoSweep) this.sweepIfDue();
     const now = this.now();
     const limit = k ?? this.config.k;
-    const queryOptions = {
-      // Rank over a wider pool, then let strength and state decide the final order. With the local models
-      // the library default (100, the reranker's pool) applies.
-      lateralInhibitionMaxPerCategory: this.neural ? undefined : Math.max(limit * 3, 20),
-      // Every pinned rule is delivered on every recall, whether or not the query mentions it.
-      guaranteedFilter: (n: MemoryNode) => n.nodeType === "invariant",
-    };
-    const result = this.neural
-      ? await this.mesh.queryAsync(query, queryOptions)
-      : this.mesh.query(query, queryOptions);
+    // Without models, rank a pool of 3k (at least 20); with them, the reranker's pool (library default 100).
+    const result = await this.retriever.search(query, { limit: this.neural ? undefined : Math.max(limit * 3, 20) });
 
-    const pinned: Memory[] = [];
-    const candidates: Array<{ node: MemoryNode; relevance: number; reasons: string[] }> = [];
-    const seen = new Set<string>();
-    const scores = (result.salientNodes as ScoredMemoryNode[]).filter((s) => this.isMemory(s.node) && s.node.nodeType !== "invariant");
-    // Relevance in 0..1: cross-encoder logits through a sigmoid, otherwise share of the top score.
-    const reranked = scores.some((s) => s.matchReasons.some((r) => r.startsWith("Rerank")));
-    const top = Math.max(...scores.map((s) => s.score), 1e-9);
-    const relevanceOf = (s: ScoredMemoryNode) => (reranked ? 1 / (1 + Math.exp(-s.score)) : Math.max(0, s.score) / top);
+    const pinned = this.db.all().filter((m) => m.pinned).map((m) => this.toMemory(m, now));
+    const top = Math.max(...result.hits.map((h) => h.score), 1e-9);
+    // Relevance in 0..1: cross-encoder logits through a sigmoid, otherwise share of the top fused score.
+    const relevanceOf = (score: number) => (result.reranked ? 1 / (1 + Math.exp(-score)) : Math.max(0, score) / top);
 
-    for (const s of result.salientNodes as ScoredMemoryNode[]) {
-      if (!this.isMemory(s.node) || seen.has(s.node.id)) continue;
-      seen.add(s.node.id);
-      if (s.node.nodeType === "invariant") {
-        pinned.push(this.toMemory(s.node, now));
-        continue;
-      }
-      if (options.activeOnly && s.node.payload?.state === "archived") continue;
-      candidates.push({ node: s.node, relevance: relevanceOf(s), reasons: s.matchReasons });
-    }
-
-    const ranked = candidates
-      .map((c) => ({ ...c, score: rankScore(c.relevance, this.strengthOf(c.node, now)) }))
-      .sort((a, b) => b.score - a.score)
+    const ranked = result.hits
+      .filter((h) => !(options.activeOnly && h.memory.state === "archived"))
+      .map((h) => ({ ...h, final: rankScore(relevanceOf(h.score), this.strengthOf(h.memory, now)) }))
+      .sort((a, b) => b.final - a.final)
       .slice(0, limit);
 
-    const memories: RecallItem[] = ranked.map((c) => ({ ...this.toMemory(c.node, now), score: c.score, reasons: c.reasons }));
-
-    if (this.reinforce) this.reinforceRecall(ranked.map((c) => c.node), now);
-
-    const flags = options.flags === false ? [] : this.absenceFlagsFor(ranked.map((c) => c.node), now);
+    const memories: RecallItem[] = ranked.map((h) => ({ ...this.toMemory(h.memory, now), score: h.final, reasons: h.reasons }));
+    const recalled = ranked.map((h) => h.memory);
+    if (this.reinforce) this.reinforceRecall(recalled, now);
+    const flags = options.flags === false ? [] : this.absenceFlagsFor(recalled, now);
 
     return {
       pinned,
@@ -263,148 +230,186 @@ export class MemoryStore {
   }
 
   /** Reinforce what was recalled, and spread a smaller reinforcement to each seed's associates. */
-  private reinforceRecall(recalled: MemoryNode[], now: number): void {
-    const storage = this.mesh.getStorage();
-    const recalledIds = new Set(recalled.map((n) => n.id));
-    for (const n of recalled) {
-      const strength = this.strengthOf(n, now);
-      this.mesh.updatePayload(n.id, {
-        strength: boostOnAccess(strength, this.importance(n), 1),
-        strengthAt: now,
-        boostCount: (n.payload?.boostCount ?? 0) + 1,
-        lastRecalledAt: now,
-        state: "active", // a recalled memory is reactivated, archived or not
-      }, now);
-    }
-    if (!this.spread) return;
-    const boosts = new Map<string, number>();
-    const all = this.memories().filter((n) => n.nodeType === "fact" && !recalledIds.has(n.id));
-    const vectors = storage.getAllVectors();
-    for (const seed of recalled.slice(0, SPREAD_SEEDS)) {
-      const seedVec = vectors.get(seed.id);
-      if (seedVec) {
-        const sims = all
-          .map((n) => ({ n, v: vectors.get(n.id) }))
-          .filter((x) => x.v && x.v.length === seedVec.length)
-          .map((x) => {
-            let s = 0;
-            for (let i = 0; i < seedVec.length; i++) s += seedVec[i]! * x.v![i]!;
-            return { n: x.n, s };
-          })
-          .filter((x) => x.s >= SPREAD_MIN_SIMILARITY)
-          .sort((a, b) => b.s - a.s)
-          .slice(0, SPREAD_NEIGHBOURS_PER_SEED);
-        for (const x of sims) boosts.set(x.n.id, Math.max(boosts.get(x.n.id) ?? 0, spreadBoost(1)));
+  private reinforceRecall(recalled: MemoryRecord[], now: number): void {
+    if (recalled.length === 0) return;
+    this.db.transaction(() => {
+      const recalledIds = new Set(recalled.map((m) => m.id));
+      for (const m of recalled) {
+        this.db.update(m.id, {
+          strength: boostOnAccess(this.strengthOf(m, now), m.importance, 1),
+          strengthAt: now,
+          boosts: m.boosts + 1,
+          lastRecalledAt: now,
+          state: "active", // a recalled memory returns to short-term, archived or not
+        });
       }
-      const seedTime = this.occurredAtOf(seed);
-      for (const n of all) {
-        if (Math.abs(this.occurredAtOf(n) - seedTime) <= SPREAD_EPISODE_WINDOW_MINUTES * 60_000) {
-          boosts.set(n.id, Math.max(boosts.get(n.id) ?? 0, spreadBoost(SPREAD_EPISODE_WEIGHT)));
+      if (!this.spread) return;
+      const others = this.db.all().filter((m) => !m.pinned && !recalledIds.has(m.id));
+      const vectors = this.db.vectors();
+      const boosts = new Map<string, number>();
+      const bump = (id: string, b: number) => boosts.set(id, Math.max(boosts.get(id) ?? 0, b));
+      const window = SPREAD_EPISODE_WINDOW_MINUTES * 60_000;
+      for (const seed of recalled.slice(0, SPREAD_SEEDS)) {
+        const sv = vectors.get(seed.id);
+        if (sv) {
+          const sims: { id: string; s: number }[] = [];
+          for (const m of others) {
+            const v = vectors.get(m.id);
+            if (!v || v.length !== sv.length) continue;
+            let s = 0;
+            for (let i = 0; i < sv.length; i++) s += sv[i]! * v[i]!;
+            if (s >= SPREAD_MIN_SIMILARITY) sims.push({ id: m.id, s });
+          }
+          sims.sort((a, b) => b.s - a.s).slice(0, SPREAD_NEIGHBOURS_PER_SEED).forEach((x) => bump(x.id, spreadBoost(1)));
+        }
+        for (const m of others) {
+          if (Math.abs(m.occurredAt - seed.occurredAt) <= window) bump(m.id, spreadBoost(SPREAD_EPISODE_WEIGHT));
         }
       }
-    }
-    for (const [id, boost] of boosts) {
-      const n = all.find((m) => m.id === id);
-      if (!n) continue;
-      const strength = this.strengthOf(n, now);
-      this.mesh.updatePayload(id, { strength: Math.min(1, strength + boost), strengthAt: now }, now);
-    }
+      for (const [id, boost] of boosts) {
+        const m = this.db.get(id);
+        if (m) this.db.update(id, { strength: Math.min(1, this.strengthOf(m, now) + boost), strengthAt: now });
+      }
+    });
   }
 
-  private absenceFlagsFor(recalled: MemoryNode[], now: number): AbsenceFlag[] {
+  private absenceFlagsFor(recalled: MemoryRecord[], now: number): AbsenceFlag[] {
     if (recalled.length === 0) return [];
-    const toDated = (n: MemoryNode): DatedMemory & { node: MemoryNode } => ({
-      id: n.id,
-      text: String(n.payload?.text ?? n.label),
-      occurredAt: this.occurredAtOf(n),
-      node: n,
-    });
-    const all = this.memories().filter((n) => n.nodeType === "fact").map(toDated);
-    const vectors = this.mesh.getStorage().getAllVectors();
-    const cosine = (a: DatedMemory, b: DatedMemory): number => {
-      const va = vectors.get(a.id);
-      const vb = vectors.get(b.id);
-      if (!va || !vb || va.length !== vb.length) return lexicalSimilarity(a, b);
-      let s = 0;
-      for (let i = 0; i < va.length; i++) s += va[i]! * vb[i]!;
-      return s;
+    let all: DatedMemory[] = this.db.all().filter((m) => !m.pinned);
+    let similarity: Similarity = cachedLexicalSimilarity(this.wordSets);
+    let floor = this.absenceSimilarity.lexical;
+    // A family member needs Jaccard >= floor > 0, so at least one word in common with its seed: compare the
+    // seeds only with memories that share a word with one of them (same flags, far fewer comparisons).
+    if (floor > 0) {
+      all = this.sharingAWord(recalled.slice(0, ABSENCE_SEEDS), all);
+      similarity = this.postingsJaccard();
+    }
+    if (this.absenceFamilies === "cosine") {
+      const vectors = this.db.vectors();
+      if (vectors.size > 0 && recalled.every((m) => vectors.has(m.id))) {
+        const lexical = similarity;
+        similarity = (a, b) => {
+          const va = vectors.get(a.id);
+          const vb = vectors.get(b.id);
+          if (!va || !vb || va.length !== vb.length) return lexical(a, b);
+          let s = 0;
+          for (let i = 0; i < va.length; i++) s += va[i]! * vb[i]!;
+          return s;
+        };
+        floor = this.absenceSimilarity.cosine;
+      }
+    }
+    return absenceFlags(recalled, all, now, similarity, floor);
+  }
+
+  private wordsOf(m: DatedMemory): Set<string> {
+    let w = this.wordSets.get(m.id);
+    if (!w) this.wordSets.set(m.id, (w = wordSet(m.text)));
+    return w;
+  }
+
+  /**
+   * Jaccard from the postings: the words a seed shares with each memory are counted once per seed, so each
+   * comparison is a lookup. Same value as `lexicalSimilarity` (selectFamily always passes the seed first).
+   */
+  private postingsJaccard(): Similarity {
+    const shared = new Map<string, Map<string, number>>();
+    return (seed, other) => {
+      let counts = shared.get(seed.id);
+      if (!counts) {
+        counts = new Map();
+        for (const w of this.wordsOf(seed)) for (const id of this.postings.get(w) ?? []) counts.set(id, (counts.get(id) ?? 0) + 1);
+        shared.set(seed.id, counts);
+      }
+      const n = counts.get(other.id) ?? 0;
+      return n === 0 ? 0 : n / (this.wordsOf(seed).size + this.wordsOf(other).size - n);
     };
-    const useVectors = this.absenceFamilies === "cosine" && vectors.size > 0 && recalled.every((n) => vectors.has(n.id));
-    return absenceFlags(
-      recalled.map(toDated), all, now,
-      useVectors ? cosine : lexicalSimilarity,
-      useVectors ? this.absenceSimilarity.cosine : this.absenceSimilarity.lexical,
-    );
+  }
+
+  private sharingAWord(seeds: DatedMemory[], all: DatedMemory[]): DatedMemory[] {
+    for (const m of all) {
+      if (this.indexed.has(m.id)) continue;
+      this.indexed.add(m.id);
+      for (const w of this.wordsOf(m)) {
+        let ids = this.postings.get(w);
+        if (!ids) this.postings.set(w, (ids = new Set()));
+        ids.add(m.id);
+      }
+    }
+    const near = new Set<string>();
+    for (const seed of seeds) for (const w of this.wordsOf(seed)) for (const id of this.postings.get(w) ?? []) near.add(id);
+    return all.filter((m) => near.has(m.id));
   }
 
   forget(id: string): boolean {
-    const node = this.mesh.getStorage().getNodeById(id);
-    if (!node || !this.isMemory(node)) return false;
-    this.mesh.deleteNode(id);
-    return true;
+    this.wordSets.delete(id);
+    return this.db.delete(id);
   }
 
   list(options: { pinned?: boolean; limit?: number; includeArchived?: boolean } = {}): Memory[] {
     const now = this.now();
-    const all = this.memories()
-      .filter((n) => options.pinned === undefined || (n.nodeType === "invariant") === options.pinned)
-      .filter((n) => options.includeArchived || n.payload?.state !== "archived")
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .map((n) => this.toMemory(n, now));
+    const all = this.db.all()
+      .filter((m) => options.pinned === undefined || m.pinned === options.pinned)
+      .filter((m) => options.includeArchived || m.state !== "archived")
+      .map((m, seq) => ({ m, seq }))
+      .sort((a, b) => b.m.createdAt - a.m.createdAt || b.seq - a.seq)
+      .map(({ m }) => this.toMemory(m, now));
     return options.limit ? all.slice(0, options.limit) : all;
   }
 
   /**
-   * The daily sweep: decay is computed lazily on read, so the sweep only applies the forgetting policy.
-   * Faded, idle memories are demoted to `archived` (kept, searchable with includeArchived) or deleted,
-   * per `forgetting.mode`. Returns what it did.
+   * Apply the forgetting policy: faded, idle short-term memories move to long-term (`archived`), or are
+   * deleted when `forgetting.mode` is "delete". Decay itself is computed on read.
    */
   sweep(): { demoted: number; deleted: number; kept: number } {
     const now = this.now();
-    const storage = this.mesh.getStorage();
     let demoted = 0, deleted = 0, kept = 0;
-    for (const n of this.memories()) {
-      const action = forgettingAction(
-        {
-          strength: this.strengthOf(n, now),
-          importance: this.importance(n),
-          lastRecalledAt: n.payload?.lastRecalledAt ?? null,
-          createdAt: n.createdAt,
-          state: n.payload?.state,
-        },
-        now,
-        this.forgetting,
-      );
-      if (action === "demote") {
-        this.mesh.updatePayload(n.id, { state: "archived", archivedAt: now }, now);
-        demoted++;
-      } else if (action === "delete") {
-        this.mesh.deleteNode(n.id);
-        deleted++;
-      } else kept++;
-    }
+    this.db.transaction(() => {
+      for (const m of [...this.db.all()]) {
+        const action = forgettingAction(
+          { strength: this.strengthOf(m, now), importance: m.importance, lastRecalledAt: m.lastRecalledAt, createdAt: m.createdAt, state: m.state },
+          now,
+          this.forgetting,
+        );
+        if (action === "demote") {
+          this.db.update(m.id, { state: "archived", archivedAt: now });
+          demoted++;
+        } else if (action === "delete") {
+          this.wordSets.delete(m.id);
+          this.db.delete(m.id);
+          deleted++;
+        } else kept++;
+      }
+      this.db.setMeta("last_sweep_at", String(now));
+    });
     return { demoted, deleted, kept };
   }
 
+  /** Sweep if the last sweep was a day or more ago. Returns the sweep's result, or null when not due. */
+  sweepIfDue(): { demoted: number; deleted: number; kept: number } | null {
+    const last = Number(this.db.getMeta("last_sweep_at") ?? 0);
+    return this.now() - last >= DAY ? this.sweep() : null;
+  }
+
   stats(): { memories: number; archived: number; pinned: number; vectors: number; neural: boolean; db: string } {
-    const nodes = this.memories();
+    const all = this.db.all();
     return {
-      memories: nodes.filter((n) => n.nodeType === "fact" && n.payload?.state !== "archived").length,
-      archived: nodes.filter((n) => n.payload?.state === "archived").length,
-      pinned: nodes.filter((n) => n.nodeType === "invariant").length,
-      vectors: this.mesh.getStorage().getAllVectors().size,
+      memories: all.filter((m) => !m.pinned && m.state !== "archived").length,
+      archived: all.filter((m) => m.state === "archived").length,
+      pinned: all.filter((m) => m.pinned).length,
+      vectors: this.db.vectors().size,
       neural: this.neural,
-      db: dbPath(),
+      db: this.db.path,
     };
   }
 
   /** Embed every memory that has no vector yet (after `nsm models install`, or after a bulk import). */
   async embedAll(): Promise<number> {
-    return this.mesh.embedPending();
+    return this.retriever.embedPending();
   }
 
   async close(): Promise<void> {
-    await this.mesh.closeAsync();
+    await this.retriever.closeAsync();
   }
 }
 
@@ -418,7 +423,7 @@ export function formatPrompt(pinned: Memory[], memories: RecallItem[], flags: Ab
   }
   if (memories.length) {
     sections.push(
-      "[MEMORIES]\n" + memories.map((m) => `• (${m.occurredAt.slice(0, 10)}) ${m.text}  [id: ${m.id}]`).join("\n")
+      "[MEMORIES]\n" + memories.map((m) => `• (${m.occurredAt.slice(0, 10)}) ${m.text}  [id: ${m.id}]`).join("\n"),
     );
   }
   if (sections.length === 0) return "(no memories match)";
