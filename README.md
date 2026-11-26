@@ -36,9 +36,52 @@ Check it works:
 nsm doctor
 ```
 
-That is the whole setup. From now on your agent has two new tools, `nsm_recall` and `nsm_remember`,
-and their descriptions tell it when to use them: recall at the start of a task, remember when you state
-a preference, a rule or a decision.
+That is the whole setup. From now on your agent has `nsm_recall` and `nsm_remember` (plus `nsm_forget`
+and `nsm_list`), and their descriptions tell it when to use them: recall at the start of a task, remember
+when you state a preference, a rule or a decision.
+
+### Make your agent use it every time
+
+The tool descriptions nudge an agent to recall and remember, but a nudge is not a habit: agents skip it
+when they are busy, and they are much worse at saving than at looking things up. To make it routine, put
+the instruction below in the file your agent reads at the start of every session:
+
+| Tool | Where it goes |
+| :--- | :--- |
+| Claude Code | `~/.claude/CLAUDE.md` (all projects) or a project's `CLAUDE.md` |
+| Codex | `~/.codex/AGENTS.md` (all projects) or a project's `AGENTS.md` |
+| Cursor | Settings > Rules > User Rules, or a `.cursor/rules/nsm.mdc` file with `alwaysApply: true` |
+| Anything else | wherever it keeps standing instructions or its system prompt |
+
+```markdown
+# Memory (NSM)
+
+I keep a persistent local memory that every session and every agent shares, through the `nsm` MCP tools.
+I rely on it so that I never have to tell an agent the same thing twice.
+
+**Recall first.** At the start of every task, before planning, answering or writing code, call
+`nsm_recall` with a short description of what you are about to do. Follow any pinned rules it returns.
+Treat the memories as dated context: when two disagree, the newer one wins. Recall again when the
+conversation moves to a different project or question.
+
+**Remember as you go.** Call `nsm_remember` as soon as one of these comes up, without waiting to be asked
+and without waiting for the end of the session:
+
+- a preference, rule or convention I state
+- a decision we make (architecture, tooling, naming, scope) and the reason for it
+- a fact about a project, its setup or its environment that is not obvious from the code
+- the root cause of a bug that was hard to find
+- the state of the work when a multi-step task finishes
+
+Write one memory per call, in one or two sentences that make sense on their own (name the project, use
+real dates), in my words where possible. Use `pinned: true` only for rules that must apply every time.
+
+**Keep it clean.** Do not save small talk, temporary debugging detail, anything the repository or git
+history already records, or secrets of any kind (keys, tokens, passwords). When I say something no longer
+holds, `nsm_forget` the old memory and remember the new one.
+
+If the `nsm` tools are not available in a session, tell me once and carry on without them.
+```
 
 ### Optional: better recall with on-device models
 
@@ -50,6 +93,50 @@ This adds a small embedding model and a reranker that run on your CPU. Recall go
 about 1.3 s per question and gets noticeably better at questions that do not share words with the
 memory (see the numbers below). `nsm models off` switches back.
 
+## How agents connect
+
+`nsm` reaches your agents through MCP (Model Context Protocol), the standard way to give an AI agent
+extra tools. The agent starts a small helper program, asks it which tools it offers, and can then call
+them during a conversation. `nsm serve` is that helper. It offers four tools:
+
+| Tool | What it does |
+| :--- | :--- |
+| `nsm_recall` | Search the memory for a question or task; pinned rules always come back |
+| `nsm_remember` | Save a memory, or a pinned rule |
+| `nsm_forget` | Delete a memory by id |
+| `nsm_list` | List what is stored |
+
+Each agent starts its own `nsm serve`, and every copy reads and writes the same file,
+`~/.nsm/memory.db`. That is why what Claude Code saves, Cursor can recall. Nothing listens on a network
+port: the agent talks to the helper over its standard input and output.
+
+To connect an agent, tell it once which command to run:
+
+**Claude Code**
+
+```bash
+claude mcp add nsm -- nsm serve
+```
+
+**Cursor**, in `.cursor/mcp.json` (or Cursor Settings > MCP):
+
+```json
+{ "mcpServers": { "nsm": { "command": "nsm", "args": ["serve"] } } }
+```
+
+**Codex**, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.nsm]
+command = "nsm"
+args = ["serve"]
+```
+
+**Anything else that speaks MCP**: command `nsm`, argument `serve`, transport stdio.
+
+Running from a clone instead of the installer? Use `bun` as the command and
+`["/path/to/nsm/bin/nsm.ts", "serve"]` as the arguments.
+
 ## Using it yourself
 
 ```bash
@@ -57,7 +144,9 @@ nsm remember "We deploy to Railway, not Fly"            # a memory
 nsm remember "Always use bun, never npm" --pin           # a rule: delivered on every recall
 nsm recall "where do we deploy?"                         # what do I know about ...
 nsm list --pinned
+nsm list --archived                                      # include long-term (faded) memories
 nsm forget <id>                                          # ids are shown by recall and list
+nsm sweep                                                # move faded memories to long-term now (recall does it daily)
 nsm stats
 ```
 
@@ -111,12 +200,12 @@ the old file is kept as `memory.db.v2-backup`.
 
 ## Measured
 
-Every number comes from MemVault's benchmark harness (`skillvault/apps/server/bench`), which runs
-`nsm` on the public LoCoMo dataset with a fixed answer model (DeepSeek V4.1 Flash), a separate judge
-(Qwen3.8 Flash) and prompts copied verbatim from Mem0's published harness: the same protocol as every
-system in that repository's `bench/RESULTS.md`. Configurations were chosen on a dev split and confirmed
-once on the held-out test split (885 questions). Comparisons are paired exact McNemar tests. Nothing is
-typed in.
+Every number was measured in October 2026 with the benchmark harness of MemVault, a hosted memory
+product by the same author that has since been discontinued. The harness ran every system on the public
+LoCoMo dataset with a fixed answer model (DeepSeek V4.1 Flash), a separate judge (Qwen3.8 Flash) and
+prompts copied verbatim from Mem0's published harness. Configurations were chosen on a dev split and
+confirmed once on the held-out test split (885 questions). Comparisons are paired exact McNemar tests.
+Nothing is typed in.
 
 | Configuration (test split) | 5 memories | 10 | 20 | 50 | Recall p50 |
 | :--- | :---: | :---: | :---: | :---: | :---: |
@@ -129,7 +218,7 @@ typed in.
 | Markdown files + grep, whole session files (1 / 2 / 3 / 5 files) | 63.4 | 75.0 | 78.1 | 83.2 | 0 ms |
 | Markdown files + grep, notes rewritten into typed fact files by a model (lines) | 59.1 | 66.2 | 71.5 | 77.4 | 0 ms |
 | Mem0 cloud (776 of the questions) | | 75.3 | 81.1 | 85.6 | 468 ms |
-| MemVault production (hosted embeddings + reranker + graph) | | 87.3 | | 91.9 | 785 ms |
+| MemVault (hosted embeddings + reranker + graph; discontinued) | | 87.3 | | 91.9 | 785 ms |
 
 Those rows were measured on 2.1. Version 3.0 removed the graph and was checked against 2.1 on the same
 split without the answer model: the same evidence reaches the top 5 to 50 at every cutoff, with and
@@ -156,7 +245,7 @@ measured too: no better than the raw notes with ranked grep at any size (n.s.), 
 points behind whole raw sessions. Tidying the notes is not where the gain is; the second model that re-reads
 candidates is.
 
-**What it does not support.** Parity with current MemVault: 2.7 points behind its production default at
+**What it does not support.** Parity with MemVault as it was: 2.7 points behind its production default at
 equal tokens (p = 0.014), 4.8 behind its high-context mode (p = 1e-6), mostly on multi-hop and paraphrase
 questions; Mem0 at its 200-memory, 6,771-token setting is also ahead (89.9%, p = 0.006). Any
 contribution from the graph: clause-extractor concepts, term nodes and fan damping were each measured and
@@ -171,9 +260,9 @@ of routines that stopped, with one false flag in 26 continuing routines, and the
 routine in 50.0% of answers with the flag against 9.1% without (p = 0.004), with no rise in invented
 anomalies. MemVault's hosted embedding detector reaches 54.5% against 4.5% on the same questions.
 
-The full campaign, 27 retrieval arms including label weighting, a graph in three designs and a larger
-reranker that were measured and rejected, plus the lifecycle and absence runs, is in `bench/RESULTS.md`;
-the design is in [NSM-SPEC.md](NSM-SPEC.md).
+The campaign covered 27 retrieval arms, including label weighting, a graph in three designs and a larger
+reranker that were measured and rejected, plus the lifecycle and absence runs. The design, the results
+and the list of what 3.0 removed are in [NSM-SPEC.md](NSM-SPEC.md).
 
 ## Development
 
@@ -183,13 +272,8 @@ bun test                 # the model tests use fakes, no download
 bun run cli -- doctor
 ```
 
-Benchmark (from `skillvault/apps/server`, needs the harness's API keys; `nsm` itself makes no calls):
-
-```bash
-bun bench/run-locomo.ts --system nsm2 --split test --run <tag>                              # no model
-bun bench/run-locomo.ts --system nsm2+embedbge+rerank --split test --run <tag>              # on-device models, library defaults
-bun bench/report-locomo.ts --run <tag>
-```
+The benchmark harness that produced the numbers above lived in the MemVault repository and is not part
+of this one, so the answer-accuracy scores cannot be re-run from here.
 
 ## License
 
