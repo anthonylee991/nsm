@@ -1,6 +1,6 @@
 {
   "name": "@skillvault/nsm",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "nsm: a local memory for AI agents. SQLite FTS5 hybrid retrieval with optional on-device embedding and reranking, short-term memories that decay into long-term, pinned rules and absence flags. No API calls.",
   "type": "module",
   "main": "src/index.ts",

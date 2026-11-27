@@ -3,6 +3,7 @@ import type { MemoryRecord } from "../db.js";
 import type { NeuralConfig } from "../neural/types.js";
 import { LocalEmbedder, LocalReranker } from "../neural/local.js";
 import { dbPath, loadConfig, modelDir, type NsmConfig } from "./paths.js";
+import { projectKey, projectName } from "./project.js";
 import {
   DEFAULT_FORGETTING,
   SPREAD_EPISODE_WEIGHT,
@@ -30,6 +31,8 @@ export interface Memory {
   occurredAt: string;
   strength: number;
   state: "active" | "archived";
+  /** The project's folder name, or "global". */
+  project: string;
 }
 
 export interface RecallItem extends Memory {
@@ -45,6 +48,14 @@ export interface RecallResult {
   prompt: string;
   latencyMs: number;
   neural: boolean;
+  /** The project recall was scoped to (folder name), or null when none was known. */
+  project: string | null;
+}
+
+/** Where the caller is working: decides the project of new memories and which pinned rules apply. */
+export interface Where {
+  /** The agent's working folder (absolute path). Default: the store's `folder`. */
+  folder?: string;
 }
 
 export interface StoreOptions {
@@ -73,7 +84,25 @@ export interface StoreOptions {
    * vectors when every recalled memory has one (measured worse at every floor; off by default).
    */
   absenceFamilies?: "lexical" | "cosine";
+  /** Working folder used when a call does not give one (the CLI and MCP server pass their own cwd). */
+  folder?: string;
+  /**
+   * With the reranker: memories it scores below this logit are left out of recall, so an unrelated memory
+   * is not returned just because there are few. Null turns it off. Default: DEFAULT_RERANK_FLOOR.
+   */
+  rerankFloor?: number | null;
+  /** Bring your own models instead of the configured local ones (sets `neural` on). */
+  models?: NeuralConfig;
 }
+
+/** Relevance multiplier for memories that belong to a different project than the caller's. */
+export const OTHER_PROJECT_WEIGHT = 0.5;
+/**
+ * Cross-encoder logit below which recall leaves a memory out. The strictest floor that dropped no evidence on
+ * LoCoMo dev (655 questions); on test it dropped 1 evidence turn of 1,039 (NSM-SPEC §4.6). Unrelated memories in
+ * a mixed store score about -11 to -12.
+ */
+export const DEFAULT_RERANK_FLOOR: number | null = -11;
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -105,10 +134,12 @@ export class MemoryStore {
   /** word -> ids of memories containing it, for the same families (stale ids are filtered on use). */
   private readonly postings = new Map<string, Set<string>>();
   private readonly indexed = new Set<string>();
+  private readonly folder: string | undefined;
+  private readonly rerankFloor: number | null;
 
   constructor(options: StoreOptions = {}) {
     this.config = options.config ?? loadConfig();
-    this.neural = options.neural ?? this.config.neural;
+    this.neural = options.models ? true : (options.neural ?? this.config.neural);
     this.now = options.now ?? (() => Date.now());
     this.forgetting = options.forgetting ?? DEFAULT_FORGETTING;
     this.reinforce = options.reinforce ?? true;
@@ -116,8 +147,10 @@ export class MemoryStore {
     this.autoSweep = options.autoSweep ?? false;
     this.absenceSimilarity = { cosine: options.absenceSimilarity?.cosine ?? 0.6, lexical: options.absenceSimilarity?.lexical ?? 0.15 };
     this.absenceFamilies = options.absenceFamilies ?? "lexical";
-    const neural: NeuralConfig = {};
-    if (this.neural) {
+    this.folder = options.folder;
+    this.rerankFloor = options.rerankFloor === undefined ? DEFAULT_RERANK_FLOOR : options.rerankFloor;
+    const neural: NeuralConfig = options.models ?? {};
+    if (this.neural && !options.models) {
       const dir = modelDir();
       neural.embedder = new LocalEmbedder(this.config.embedModel, { modelDir: dir });
       neural.reranker = new LocalReranker(this.config.rerankModel, { modelDir: dir });
@@ -144,7 +177,12 @@ export class MemoryStore {
       occurredAt: new Date(m.occurredAt).toISOString(),
       strength: this.strengthOf(m, now),
       state: m.state,
+      project: projectName(m.project),
     };
+  }
+
+  private projectOf(where: Where = {}): string | null {
+    return projectKey(where.folder ?? this.folder);
   }
 
   // ---- verbs ----
@@ -162,14 +200,20 @@ export class MemoryStore {
       allowDuplicate?: boolean;
       /** Caller-chosen id (benchmarks map turns to memories). */
       id?: string;
-    } = {},
-  ): Promise<{ id: string; duplicate: boolean }> {
+      /**
+       * "project" (default when a project is known): belongs to the project of `folder`. "global": applies
+       * everywhere. For pinned rules this decides where they are delivered.
+       */
+      scope?: "project" | "global";
+    } & Where = {},
+  ): Promise<{ id: string; duplicate: boolean; project: string }> {
     const clean = text.trim();
     if (!clean) throw new Error("empty memory");
     if (!options.allowDuplicate) {
       const existing = this.db.findByText(clean);
-      if (existing) return { id: existing.id, duplicate: true };
+      if (existing) return { id: existing.id, duplicate: true, project: projectName(existing.project) };
     }
+    const project = options.scope === "global" ? null : this.projectOf(options);
     const pinned = options.pinned === true;
     const createdAt = options.createdAt ?? this.now();
     const occurredAt = options.occurredAt ?? createdAt;
@@ -185,17 +229,20 @@ export class MemoryStore {
       occurredAt,
       episode,
       ordinal: this.db.episodeSize(episode),
+      project,
     });
     if (this.neural) await this.retriever.embedPending();
-    return { id: memory.id, duplicate: false };
+    return { id: memory.id, duplicate: false, project: projectName(project) };
   }
 
   /**
-   * Pinned rules, then the k best memories. Candidates come from retrieval; strength then decides among
-   * them (a strong cue reactivates a faded memory, so long-term memories still answer direct questions).
-   * `activeOnly` leaves long-term (archived) memories out.
+   * Pinned rules (global ones and the current project's), then the k best memories. Candidates come from
+   * retrieval; strength then decides among them (a strong cue reactivates a faded memory, so long-term
+   * memories still answer direct questions). Memories from other projects stay searchable at half weight;
+   * with the reranker, ones it scores below the floor are left out. `activeOnly` leaves long-term
+   * (archived) memories out.
    */
-  async recall(query: string, k?: number, options: { activeOnly?: boolean; flags?: boolean } = {}): Promise<RecallResult> {
+  async recall(query: string, k?: number, options: { activeOnly?: boolean; flags?: boolean } & Where = {}): Promise<RecallResult> {
     const start = performance.now();
     if (this.autoSweep) this.sweepIfDue();
     const now = this.now();
@@ -203,14 +250,21 @@ export class MemoryStore {
     // Without models, rank a pool of 3k (at least 20); with them, the reranker's pool (library default 100).
     const result = await this.retriever.search(query, { limit: this.neural ? undefined : Math.max(limit * 3, 20) });
 
-    const pinned = this.db.all().filter((m) => m.pinned).map((m) => this.toMemory(m, now));
+    const current = this.projectOf(options);
+    const applies = (m: MemoryRecord) => m.project === null || m.project === current;
+    const pinned = this.db.all().filter((m) => m.pinned && applies(m)).map((m) => this.toMemory(m, now));
     const top = Math.max(...result.hits.map((h) => h.score), 1e-9);
     // Relevance in 0..1: cross-encoder logits through a sigmoid, otherwise share of the top fused score.
     const relevanceOf = (score: number) => (result.reranked ? 1 / (1 + Math.exp(-score)) : Math.max(0, score) / top);
+    const floor = result.reranked ? this.rerankFloor : null;
 
     const ranked = result.hits
       .filter((h) => !(options.activeOnly && h.memory.state === "archived"))
-      .map((h) => ({ ...h, final: rankScore(relevanceOf(h.score), this.strengthOf(h.memory, now)) }))
+      .filter((h) => floor === null || h.score >= floor)
+      .map((h) => {
+        const relevance = relevanceOf(h.score) * (current !== null && !applies(h.memory) ? OTHER_PROJECT_WEIGHT : 1);
+        return { ...h, final: rankScore(relevance, this.strengthOf(h.memory, now)) };
+      })
       .sort((a, b) => b.final - a.final)
       .slice(0, limit);
 
@@ -226,6 +280,7 @@ export class MemoryStore {
       prompt: formatPrompt(pinned, memories, flags),
       latencyMs: performance.now() - start,
       neural: this.neural,
+      project: current === null ? null : projectName(current),
     };
   }
 
@@ -344,6 +399,15 @@ export class MemoryStore {
   forget(id: string): boolean {
     this.wordSets.delete(id);
     return this.db.delete(id);
+  }
+
+  /** Move a memory to the project of `folder`, or make it global (folder null). */
+  rescope(id: string, folder: string | null): { ok: boolean; project: string } {
+    const m = this.db.get(id);
+    if (!m) return { ok: false, project: "" };
+    const project = folder === null ? null : projectKey(folder);
+    this.db.update(id, { project });
+    return { ok: true, project: projectName(project) };
   }
 
   list(options: { pinned?: boolean; limit?: number; includeArchived?: boolean } = {}): Memory[] {

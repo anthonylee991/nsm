@@ -10,7 +10,7 @@ import { MemoryStore } from "../app/store.js";
  */
 const PROTOCOL_VERSION = "2025-06-18";
 export const SERVER_NAME = "nsm";
-export const SERVER_VERSION = "3.0.0";
+export const SERVER_VERSION = "3.1.0";
 
 interface Req { jsonrpc: "2.0"; id?: string | number | null; method: string; params?: any }
 interface Res { jsonrpc: "2.0"; id: string | number | null; result?: unknown; error?: { code: number; message: string } }
@@ -21,13 +21,17 @@ export const TOOLS = [
     description:
       "Recall what the user has told you to remember. Call this at the start of any task, before planning, " +
       "coding, writing or answering about the user's preferences, projects, decisions or past work. Returns the " +
-      "user's pinned rules (always) and the memories most relevant to the query, with dates and ids. Runs " +
-      "locally; nothing leaves the machine.",
+      "user's pinned rules (the global ones and the current project's) and the memories most relevant to the " +
+      "query, with dates and ids. Pass your working directory as `folder`. Runs locally; nothing leaves the machine.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "What you are about to do, or the question you need context for." },
         k: { type: "number", description: "How many memories to return (default 10)." },
+        folder: {
+          type: "string",
+          description: "Your current working directory (absolute path). Decides the project: its pinned rules come back, and its memories rank first.",
+        },
       },
       required: ["query"],
       additionalProperties: false,
@@ -38,14 +42,25 @@ export const TOOLS = [
     description:
       "Store something durable the user said or decided: a preference, a rule, a decision, a fact about their " +
       "work or life, a bug root cause, a how-to. Call it as soon as the thing is agreed, not at the end. Use " +
-      "pinned=true for rules that must apply every time (coding standards, non-negotiables). One memory per call, " +
-      "one or two sentences, in the user's words where possible.",
+      "pinned=true for rules that must apply every time (coding standards, non-negotiables). Pass your working " +
+      "directory as `folder`; scope='global' for things about the user that hold in every project, scope='project' " +
+      "(the default) for things about this codebase. One memory per call, one or two sentences, in the user's words " +
+      "where possible.",
     inputSchema: {
       type: "object",
       properties: {
         text: { type: "string", description: "The memory, one or two sentences." },
         pinned: { type: "boolean", description: "True for a rule that must be delivered on every recall." },
         source: { type: "string", description: "Where it came from, e.g. 'claude-code', 'cursor', 'user'." },
+        folder: {
+          type: "string",
+          description: "Your current working directory (absolute path). The memory belongs to this folder's project unless scope is 'global'.",
+        },
+        scope: {
+          type: "string",
+          enum: ["project", "global"],
+          description: "'project' (default): applies to the project of `folder`. 'global': applies everywhere.",
+        },
       },
       required: ["text"],
       additionalProperties: false,
@@ -74,6 +89,10 @@ export const TOOLS = [
     },
   },
 ] as const;
+
+function folderArg(args: Record<string, unknown>): string | undefined {
+  return typeof args.folder === "string" && args.folder.trim() ? args.folder : undefined;
+}
 
 export async function handle(store: MemoryStore, req: Req): Promise<Res | null> {
   const id = req.id ?? null;
@@ -108,8 +127,8 @@ export async function handle(store: MemoryStore, req: Req): Promise<Res | null> 
           case "nsm_recall": {
             const query = String(args.query ?? "").trim();
             if (!query) return err(-32602, "query is required");
-            const r = await store.recall(query, typeof args.k === "number" ? args.k : undefined);
-            return text(r.prompt, { pinned: r.pinned, memories: r.memories, latencyMs: Math.round(r.latencyMs), neural: r.neural });
+            const r = await store.recall(query, typeof args.k === "number" ? args.k : undefined, { folder: folderArg(args) });
+            return text(r.prompt, { project: r.project, pinned: r.pinned, memories: r.memories, latencyMs: Math.round(r.latencyMs), neural: r.neural });
           }
           case "nsm_remember": {
             const t = String(args.text ?? "").trim();
@@ -117,8 +136,10 @@ export async function handle(store: MemoryStore, req: Req): Promise<Res | null> 
             const r = await store.remember(t, {
               pinned: args.pinned === true,
               source: typeof args.source === "string" ? args.source : "mcp",
+              folder: folderArg(args),
+              scope: args.scope === "global" ? "global" : args.scope === "project" ? "project" : undefined,
             });
-            return text(r.duplicate ? `already remembered (id ${r.id})` : `remembered (id ${r.id})`, r);
+            return text(r.duplicate ? `already remembered (id ${r.id}, ${r.project})` : `remembered (id ${r.id}, ${r.project})`, r);
           }
           case "nsm_forget": {
             const fid = String(args.id ?? "");
@@ -131,7 +152,7 @@ export async function handle(store: MemoryStore, req: Req): Promise<Res | null> 
               limit: typeof args.limit === "number" ? args.limit : 50,
             });
             return text(
-              items.length ? items.map((m) => `• (${m.createdAt.slice(0, 10)})${m.pinned ? " [pinned]" : ""} ${m.text}  [id: ${m.id}]`).join("\n") : "(no memories)",
+              items.length ? items.map((m) => `• (${m.createdAt.slice(0, 10)})${m.pinned ? " [pinned]" : ""} [${m.project}] ${m.text}  [id: ${m.id}]`).join("\n") : "(no memories)",
               { memories: items }
             );
           }

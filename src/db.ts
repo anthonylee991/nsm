@@ -30,9 +30,11 @@ export interface MemoryRecord {
   /** active = short-term (competes on any cue); archived = long-term (faded, still reachable by a direct cue). */
   state: "active" | "archived";
   archivedAt: number | null;
+  /** The project it belongs to (see src/app/project.ts), or null for everywhere. */
+  project: string | null;
 }
 
-export type LifecyclePatch = Partial<Pick<MemoryRecord, "strength" | "strengthAt" | "boosts" | "lastRecalledAt" | "state" | "archivedAt">>;
+export type LifecyclePatch = Partial<Pick<MemoryRecord, "strength" | "strengthAt" | "boosts" | "lastRecalledAt" | "state" | "archivedAt" | "project">>;
 
 const STOP_WORDS = new Set([
   "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "of", "with", "by", "from",
@@ -66,7 +68,7 @@ export function phrasePairs(query: string): [string, string][] {
 interface Row {
   seq: number; id: string; text: string; pinned: number; source: string; created_at: number; occurred_at: number;
   episode: number | null; ordinal: number | null; importance: string; strength: number; strength_at: number;
-  boosts: number; last_recalled_at: number | null; state: string; archived_at: number | null;
+  boosts: number; last_recalled_at: number | null; state: string; archived_at: number | null; project: string | null;
 }
 
 function fromRow(r: Row): MemoryRecord {
@@ -74,12 +76,13 @@ function fromRow(r: Row): MemoryRecord {
     id: r.id, text: r.text, pinned: r.pinned === 1, source: r.source, createdAt: r.created_at, occurredAt: r.occurred_at,
     episode: r.episode, ordinal: r.ordinal, importance: r.importance as Importance, strength: r.strength,
     strengthAt: r.strength_at, boosts: r.boosts, lastRecalledAt: r.last_recalled_at,
-    state: r.state === "archived" ? "archived" : "active", archivedAt: r.archived_at,
+    state: r.state === "archived" ? "archived" : "active", archivedAt: r.archived_at, project: r.project ?? null,
   };
 }
 
 const COLUMNS: Record<keyof LifecyclePatch, string> = {
   strength: "strength", strengthAt: "strength_at", boosts: "boosts", lastRecalledAt: "last_recalled_at", state: "state", archivedAt: "archived_at",
+  project: "project",
 };
 
 export class MemoryDB {
@@ -114,7 +117,8 @@ export class MemoryDB {
         boosts INTEGER NOT NULL DEFAULT 0,
         last_recalled_at INTEGER,
         state TEXT NOT NULL DEFAULT 'active',
-        archived_at INTEGER
+        archived_at INTEGER,
+        project TEXT
       );
       CREATE INDEX IF NOT EXISTS memories_episode ON memories(episode, ordinal);
       CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
@@ -134,6 +138,9 @@ export class MemoryDB {
       );
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+    // 3.0 databases predate project scopes: their memories stay global (project NULL).
+    const columns = (this.db.query("PRAGMA table_info(memories)").all() as { name: string }[]).map((c) => c.name);
+    if (!columns.includes("project")) this.db.run("ALTER TABLE memories ADD COLUMN project TEXT");
     this.migrateFromV2();
   }
 
@@ -247,10 +254,10 @@ export class MemoryDB {
 
   insert(m: MemoryRecord): void {
     this.db.query(`INSERT INTO memories
-      (id, text, pinned, source, created_at, occurred_at, episode, ordinal, importance, strength, strength_at, boosts, last_recalled_at, state, archived_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      (id, text, pinned, source, created_at, occurred_at, episode, ordinal, importance, strength, strength_at, boosts, last_recalled_at, state, archived_at, project)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       m.id, m.text, m.pinned ? 1 : 0, m.source, m.createdAt, m.occurredAt, m.episode, m.ordinal, m.importance,
-      m.strength, m.strengthAt, m.boosts, m.lastRecalledAt, m.state, m.archivedAt,
+      m.strength, m.strengthAt, m.boosts, m.lastRecalledAt, m.state, m.archivedAt, m.project,
     );
     if (this.cache) {
       this.fresh();

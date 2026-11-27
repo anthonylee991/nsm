@@ -30,6 +30,8 @@ export interface AddOptions {
   occurredAt?: number;
   episode?: number;
   ordinal?: number;
+  /** Project key (src/app/project.ts), or null / absent for everywhere. */
+  project?: string | null;
 }
 
 export interface SearchOptions {
@@ -93,6 +95,7 @@ export class Retriever {
       lastRecalledAt: null,
       state: "active",
       archivedAt: null,
+      project: options.project ?? null,
     };
     this.db.insert(memory);
     return memory;

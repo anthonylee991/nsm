@@ -60,7 +60,8 @@ I keep a persistent local memory that every session and every agent shares, thro
 I rely on it so that I never have to tell an agent the same thing twice.
 
 **Recall first.** At the start of every task, before planning, answering or writing code, call
-`nsm_recall` with a short description of what you are about to do. Follow any pinned rules it returns.
+`nsm_recall` with a short description of what you are about to do and your working directory as
+`folder`. Follow any pinned rules it returns: they are my global rules plus this project's.
 Treat the memories as dated context: when two disagree, the newer one wins. Recall again when the
 conversation moves to a different project or question.
 
@@ -74,7 +75,10 @@ and without waiting for the end of the session:
 - the state of the work when a multi-step task finishes
 
 Write one memory per call, in one or two sentences that make sense on their own (name the project, use
-real dates), in my words where possible. Use `pinned: true` only for rules that must apply every time.
+real dates), in my words where possible. Always pass your working directory as `folder`. Use
+`scope: "global"` for things about me that hold in every project (how I work, what I prefer) and leave
+the default, the current project, for things about this codebase. Use `pinned: true` only for rules that
+must apply every time.
 
 **Keep it clean.** Do not save small talk, temporary debugging detail, anything the repository or git
 history already records, or secrets of any kind (keys, tokens, passwords). When I say something no longer
@@ -101,8 +105,8 @@ them during a conversation. `nsm serve` is that helper. It offers four tools:
 
 | Tool | What it does |
 | :--- | :--- |
-| `nsm_recall` | Search the memory for a question or task; pinned rules always come back |
-| `nsm_remember` | Save a memory, or a pinned rule |
+| `nsm_recall` | Search the memory for a question or task; the global pinned rules and the current project's always come back |
+| `nsm_remember` | Save a memory or a pinned rule, for the current project or for everywhere |
 | `nsm_forget` | Delete a memory by id |
 | `nsm_list` | List what is stored |
 
@@ -140,11 +144,13 @@ Running from a clone instead of the installer? Use `bun` as the command and
 ## Using it yourself
 
 ```bash
-nsm remember "We deploy to Railway, not Fly"            # a memory
-nsm remember "Always use bun, never npm" --pin           # a rule: delivered on every recall
+nsm remember "We deploy to Railway, not Fly"            # a memory for the project you are in
+nsm remember "Always use bun, never npm" --pin           # a rule for this project: delivered on every recall here
+nsm remember "I choose the AI model" --pin --global      # a rule for everywhere
 nsm recall "where do we deploy?"                         # what do I know about ...
 nsm list --pinned
 nsm list --archived                                      # include long-term (faded) memories
+nsm scope <id> global                                    # move a memory to everywhere (or `project`: to this one)
 nsm forget <id>                                          # ids are shown by recall and list
 nsm sweep                                                # move faded memories to long-term now (recall does it daily)
 nsm stats
@@ -170,7 +176,14 @@ machine). Override the location with `NSM_HOME`.
 * **Retrieval**: BM25, phrase and substring legs fused by reciprocal rank fusion; with the on-device models,
   a dense leg at double weight and a cross-encoder that re-reads the top 100 candidates plus the memories
   saved around the top hits.
-* **Pinned rules**: memories marked `--pin` are delivered on every recall, matched or not.
+* **Projects**: every memory belongs to a project (the git repository of the folder the agent is working
+  in) or to everywhere. Pinned rules are delivered only where they apply: your global ones everywhere, a
+  project's only in that project. Other memories stay searchable from any project, ranked at half weight
+  outside their own, so a decision made in one repo can still help in another.
+* **Pinned rules**: memories marked `--pin` are delivered on every recall in their scope, matched or not.
+* **Nothing irrelevant to fill space**: with the on-device models, a memory the reranker scores as
+  unrelated (below -11) is left out, so a small store does not hand back everything it has. That floor
+  was the strictest one that lost no evidence on the LoCoMo dev split.
 * **Short-term and long-term memory, from ACM**: every memory has a strength that decays over about 90
   days and is refreshed when it is recalled (and a little when its neighbours are). Once a day, memories
   that have faded and gone unrecalled for 90 days move to long-term: kept whole, out of the way of weak

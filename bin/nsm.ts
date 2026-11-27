@@ -3,8 +3,9 @@
  * nsm: a local memory for AI agents. One SQLite file under ~/.nsm, optional on-device models.
  *
  *   nsm serve                         MCP server on stdio (what your agent harness runs)
- *   nsm remember "<text>" [--pin]     store a memory (or a pinned rule)
+ *   nsm remember "<text>" [--pin] [--global]   store a memory or pinned rule for this folder's project (or everywhere)
  *   nsm recall "<query>" [--k N] [--json]
+ *   nsm scope <id> global|project     move a memory to everywhere, or to the current folder's project
  *   nsm forget <id>
  *   nsm list [--pinned] [--archived] [--limit N]
  *   nsm models install | status | off download the local models and switch recall to use them
@@ -35,7 +36,8 @@ const out = (s: string) => process.stdout.write(s + "\n");
 async function main() {
   switch (command) {
     case "serve": {
-      const store = new MemoryStore({ autoSweep: true });
+      // A call that names no folder falls back to the folder the agent started this server in.
+      const store = new MemoryStore({ autoSweep: true, folder: process.cwd() });
       log(`[nsm] serving MCP on stdio (db ${dbPath()}, local models ${store.neural ? "on" : "off"})`);
       await serve(store);
       await store.close();
@@ -44,16 +46,20 @@ async function main() {
     case "remember": {
       const text = positional.join(" ").trim();
       if (!text) throw new Error('usage: nsm remember "<text>" [--pin] [--source=<name>]');
-      const store = new MemoryStore();
-      const r = await store.remember(text, { pinned: flags.pin === true, source: typeof flags.source === "string" ? flags.source : "cli" });
-      out(r.duplicate ? `already remembered: ${r.id}` : `remembered: ${r.id}${flags.pin ? " (pinned)" : ""}`);
+      const store = new MemoryStore({ folder: process.cwd() });
+      const r = await store.remember(text, {
+        pinned: flags.pin === true,
+        source: typeof flags.source === "string" ? flags.source : "cli",
+        scope: flags.global === true ? "global" : undefined,
+      });
+      out(r.duplicate ? `already remembered: ${r.id} (${r.project})` : `remembered: ${r.id}${flags.pin ? " (pinned)" : ""} (${r.project})`);
       await store.close();
       return;
     }
     case "recall": {
       const query = positional.join(" ").trim();
       if (!query) throw new Error('usage: nsm recall "<query>" [--k=N] [--json]');
-      const store = new MemoryStore({ autoSweep: true });
+      const store = new MemoryStore({ autoSweep: true, folder: process.cwd() });
       const r = await store.recall(query, typeof flags.k === "string" ? Number(flags.k) : undefined, { activeOnly: flags["active-only"] === true });
       out(flags.json ? JSON.stringify(r, null, 2) : r.prompt);
       log(`[nsm] ${r.memories.length} memories, ${r.pinned.length} pinned, ${r.flags.length} flags, ${r.latencyMs.toFixed(0)} ms${r.neural ? ", local models" : ""}`);
@@ -64,6 +70,15 @@ async function main() {
       const store = new MemoryStore();
       const r = store.sweep();
       out(`sweep: ${r.demoted} demoted, ${r.deleted} deleted, ${r.kept} kept`);
+      await store.close();
+      return;
+    }
+    case "scope": {
+      const [id, where] = positional;
+      if (!id || (where !== "global" && where !== "project")) throw new Error("usage: nsm scope <id> global|project   (project = the one of the current folder)");
+      const store = new MemoryStore();
+      const r = store.rescope(id, where === "global" ? null : process.cwd());
+      out(r.ok ? `${id} -> ${r.project}` : `no memory with id ${id}`);
       await store.close();
       return;
     }
@@ -78,7 +93,7 @@ async function main() {
     case "list": {
       const store = new MemoryStore();
       const items = store.list({ pinned: flags.pinned === true ? true : undefined, limit: typeof flags.limit === "string" ? Number(flags.limit) : 50, includeArchived: flags.archived === true });
-      out(items.length ? items.map((m) => `${m.createdAt.slice(0, 10)}  ${m.pinned ? "[pinned] " : ""}${m.state === "archived" ? "[archived] " : ""}${m.text}  (${m.id}, strength ${m.strength.toFixed(2)})`).join("\n") : "(no memories)");
+      out(items.length ? items.map((m) => `${m.createdAt.slice(0, 10)}  ${m.pinned ? "[pinned] " : ""}${m.state === "archived" ? "[archived] " : ""}[${m.project}] ${m.text}  (${m.id}, strength ${m.strength.toFixed(2)})`).join("\n") : "(no memories)");
       await store.close();
       return;
     }
@@ -154,8 +169,9 @@ async function main() {
     default:
       out(`nsm ${SERVER_VERSION}: a local memory for AI agents\n\n` +
         `  nsm serve                          MCP server on stdio\n` +
-        `  nsm remember "<text>" [--pin]      store a memory (or a pinned rule)\n` +
+        `  nsm remember "<text>" [--pin] [--global]  store a memory or pinned rule for this project (or everywhere)\n` +
         `  nsm recall "<query>" [--k=N]       what do I know about ...\n` +
+        `  nsm scope <id> global|project      move a memory to everywhere / to this folder's project\n` +
         `  nsm forget <id>\n` +
         `  nsm list [--pinned] [--archived] [--limit=N]\n` +
         `  nsm sweep                          move faded, idle memories to long-term (archived, not deleted); recall does this daily\n` +

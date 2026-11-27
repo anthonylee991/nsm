@@ -2,7 +2,7 @@
 ### A local memory for AI agents: hybrid retrieval, a short-term / long-term lifecycle, PAE-shaped recall
 
 **Design specification**
-*Version 3.0, November 2026. Anthony Lee.*
+*Version 3.1, November 2026. Anthony Lee.*
 
 ---
 
@@ -98,7 +98,7 @@ From ACM, measured in MemVault and in NSM (§4.3):
 | :--- | :--- | :--- |
 | short-term (`active`) | every new memory | competes on any cue |
 | long-term (`archived`) | strength ≤ 0.02 and not recalled for 90 days | kept whole; hidden from `activeOnly` recall and lists; still reached by a direct question; back to short-term when recalled |
-| pinned | rules the user marked | delivered on every recall, never decays, never ranked |
+| pinned | rules the user marked | delivered on every recall in their project (or everywhere), never decays, never ranked |
 
 Strength $S(t) = S_0 e^{-t/\tau}$, $\tau = 30 (1 + 0.25 \min(B, 20))$ days ($B$ = times recalled: the
 savings effect). Recall adds $0.17 \ln 2$; a tenth of that spreads to the top recalled memories' vector
@@ -111,6 +111,26 @@ Long-term memories are not summarised or merged. Measured: deleting faded memori
 originals cost 7 points, and rewriting notes into typed facts was no better than the raw notes and hurt
 dates (§4, markdown arms). The space a summary would save is small next to what 3.0 freed by removing the
 graph.
+
+### 3.4a Projects
+
+Each memory has a project: the top folder of the git repository the agent was working in (a folder
+outside any repository is its own project; the home folder and drive roots are none), or NULL for
+everywhere. Agents pass their working directory as `folder` on every call; the MCP server falls back to the
+folder it was started in. `remember` takes `scope: "project"` (default) or `"global"`; the agent chooses
+when the user states the thing, which is when it has the context to.
+
+* **Pinned rules**: recall delivers the global rules and the current project's, no others.
+* **Other memories**: searchable from every project. A memory of another project has its relevance halved
+  in the lifecycle rank, a nudge toward the current project's context that never hides a strong match.
+* 3.0 databases gain the column on open; their memories stay global until rescoped (`nsm scope`).
+
+### 3.4b Relevance floor
+
+With the reranker, recall leaves out memories it scores below a logit of -11, so a store holding a few
+unrelated memories does not return all of them to fill k. The floor is the strictest that dropped no
+evidence on LoCoMo dev (§4.6). Without the reranker no score is calibrated across queries, so there is no
+floor.
 
 ### 3.5 Absence flags
 
@@ -262,6 +282,27 @@ Where 2.1's time went: every write re-parsed every stored row (the dedupe check 
 scanned a cache the write had just dropped), and every recall tokenised every memory again for the
 absence-flag families. 3.0 answers those from SQL and keeps word sets and a word index between recalls;
 the flags are identical (200 of 200 recalls checked against the reference implementation).
+
+### 4.6 Relevance floor (3.1, measured 2026-11-27)
+
+Cross-encoder logits of the top 50 per question (on-device models, library defaults), LoCoMo dev chosen,
+test confirmed. Evidence turns score low more often than one might expect (dev p1 -9.1, p5 -7.0), so any
+floor costs something; -11 is the strictest that dropped none on dev.
+
+| Floor | Dev: evidence dropped | Dev: all evidence @10 / @50 | Test: evidence dropped | Test: all evidence @10 / @50 |
+| :--- | :---: | :---: | :---: | :---: |
+| none | 0 | 66.9 / 77.3 | 0 | 70.4 / 79.7 |
+| -11 | 0 | 66.9 / 77.3 | 1 of 1,039 | 70.3 / 79.5 |
+| -10 | 4 | 66.7 / 76.6 | 2 | 70.2 / 79.4 |
+| -8 | 18 | 66.3 / 75.3 | 20 | 69.8 / 78.3 |
+| -5 | 79 | 64.3 / 71.1 | 113 | 66.7 / 71.2 |
+
+In LoCoMo every memory comes from the same conversation, so the floor almost never bites (10.0 of the top
+10 kept on average). In a personal store spanning projects it does: unrelated memories scored -10.7 to
+-11.5 on the author's store, and recall in one project went from 9 memories returned to 3.
+
+The half weight for other projects' memories is a ranking choice, not a measured one: LoCoMo has no
+projects to measure it on.
 
 ---
 
